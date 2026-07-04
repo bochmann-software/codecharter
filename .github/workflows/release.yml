@@ -1,0 +1,65 @@
+name: Release
+
+# When a release is published, verify the bundle builds from the pinned
+# lockfile and move the major version tag (e.g. v1) to the released commit so
+# `@v1` consumers receive it. Can also be run manually for a given tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to (re)publish, e.g. v1.7.0
+        required: true
+
+# Pushing the moving major tag needs write access to repository contents.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the release tag
+        id: tag
+        shell: bash
+        run: echo "value=${{ github.event.release.tag_name || inputs.tag }}" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.tag.outputs.value }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify the bundle builds from the lockfile
+        run: npm run build
+
+      - name: Verify the tag matches package.json
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.value }}"
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Release tag $tag does not match package.json version $pkg."
+            exit 1
+          fi
+
+      - name: Move the major version tag
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.value }}"
+          major="${tag%%.*}"   # v1.7.0 -> v1
+          # Lightweight tag move: no commit object, so no committer identity needed.
+          git tag -f "$major" "$tag"
+          git push --force origin "refs/tags/$major"
+          echo "Moved $major -> $tag"

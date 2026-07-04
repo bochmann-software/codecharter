@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The CI job only checks out and builds the code; no write access is needed.
+permissions:
+  contents: read
+
+# Cancel superseded runs for the same ref so a fresh push does not queue behind
+# an outdated one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: ['24']
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      # Full suite, including the spawned-bundle smoke test (which is skipped
+      # under coverage because spawning breaks V8 coverage aggregation).
+      - name: Run tests
+        run: npm test
+
+      # Coverage gate on the source (Node excludes the test files themselves).
+      # run() is the orchestrator, exercised separately, so the line floor is
+      # modest while branch/function coverage of the logic is held high.
+      - name: Coverage gate
+        run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-lines=65
+          --test-coverage-branches=85
+          --test-coverage-functions=90
+
+      # Bundle the action to catch source that fails to compile/bundle. We do not
+      # byte-compare against the committed dist/: bundler output can differ across
+      # OS/Node versions, so a strict diff would fail on environment noise rather
+      # than real source changes. The committed bundle is still functional either way.
+      - name: Build dist bundle (compile check)
+        run: npm run build

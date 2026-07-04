@@ -1,0 +1,7 @@
+# Generated bundle — never hand-formatted.
+dist/
+# Lockfile is managed by npm.
+package-lock.json
+# Prose is hand-wrapped; keep Prettier out of it.
+README.md
+CHANGELOG.md

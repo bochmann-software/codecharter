@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Action runtime + tooling dependencies.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      actions-toolkit:
+        patterns:
+          - '@actions/*'
+
+  # The reusable actions referenced by the CI/release workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -1,0 +1,20 @@
+CodeGuard GitHub Action
+
+Copyright (c) 2026 bochmann-software. All rights reserved.
+
+This software is proprietary and is distributed as part of the CodeGuard
+product. Use of this GitHub Action is permitted solely in connection with a
+valid CodeGuard subscription or trial and is governed by the CodeGuard Terms of
+Service available at https://codeguard.bochmann-software.com.
+
+Except as expressly permitted by those terms, no part of this software may be
+copied, modified, distributed, sublicensed, or used to create derivative works
+without the prior written consent of bochmann-software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

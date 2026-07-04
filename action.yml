@@ -1,0 +1,142 @@
+name: CodeCharter
+description: Analyze .NET code quality and annotate pull requests with violations
+author: bochmann-software
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  solution:
+    description: |
+      Path to the .sln, .slnx, or .csproj file, relative to the repository root.
+      Leave empty to auto-discover: the action picks the first .sln/.slnx it finds
+      (shallowest directory first, then alphabetical), or the first .csproj when no
+      solution file exists. Set this explicitly when the repository has several.
+    required: false
+    default: ''
+  api-key:
+    description: |
+      Your CodeCharter portal API key. Generate one at
+      https://codecharter.tools/api-keys and store as a
+      repository or organization secret named CODECHARTER_API_KEY.
+    required: true
+  rules:
+    description: |
+      Path to a local rules directory in your repository (e.g. rules), passed to
+      the CLI as `--rules`. Leave empty to let the CLI use its own default: a
+      `rules` directory in the repository root if one exists, otherwise the
+      sample rules bundled with the CLI.
+    required: false
+    default: ''
+  require-rules:
+    description: |
+      Fail the run instead of silently falling back to the CLI's bundled sample
+      rules. When 'true' and neither `rules` is set nor a `rules/` directory
+      exists in the repository root, the step fails with an actionable message.
+      Leave 'false' (default) to allow the bundled-rules fallback; a warning is
+      logged whenever that fallback is used either way.
+    required: false
+    default: 'false'
+  fail-on:
+    description: Exit with a failure when any violation reaches this level (error | warn | info | never).
+    required: false
+    default: 'error'
+  severity-threshold:
+    description: Minimum severity to report and annotate (error | warn | info).
+    required: false
+    default: 'info'
+  diff:
+    description: |
+      Scope the analysis to only changed lines. One input, interpreted by value:
+        - 'false' (default) — analyze the whole solution.
+        - 'true' — on pull requests, diff against the base branch
+          (merge-base..head). Ignored (with a warning) on non-PR events.
+        - a git ref range, e.g. 'main..HEAD' or 'origin/main..HEAD'.
+        - a path to a unified diff file in the repository.
+      In every diff mode both the reported findings and the fail-on gate apply
+      only to changed lines. The diff is computed on the runner, so check out
+      enough history (actions/checkout with fetch-depth: 0) for the compared
+      commits to be reachable.
+    required: false
+    default: 'false'
+  baseline:
+    description: |
+      Path to a baseline file (relative to the repo root, or absolute) recording
+      accepted findings. When set, both the reported findings and the fail-on gate
+      apply only to findings NOT in the baseline, so existing findings are tolerated
+      and only new ones fail the build. Generate the file with the CLI's
+      `--write-baseline` and commit it. A missing file analyzes everything (with a
+      warning); a corrupt file fails the run. Composes with `diff`. Requires a CLI
+      with baseline support (`version: latest`, the default, satisfies it).
+    required: false
+    default: ''
+  telemetry:
+    description: |
+      Opt-in telemetry. When 'true', the run sends one anonymous usage event
+      (tool name, latency bucket, per-rule finding counts, hashed workspace id) to
+      the CodeCharter endpoint, authenticated with the short-lived license the CLI
+      already mints from `api-key`. Off by default; no source, file paths, or code
+      are ever sent. Requires a CLI with telemetry support (`version: latest`, the
+      default, satisfies it).
+    required: false
+    default: 'false'
+  version:
+    description: |
+      CodeCharter CLI version selector. Use 'latest' (recommended), 'v1',
+      'v1.4', or an exact pin like 'v1.4.2'.
+    required: false
+    default: 'latest'
+  portal-base-url:
+    description: |
+      CodeCharter portal base URL. Override only if pointing at a self-hosted
+      portal or staging environment.
+    required: false
+    default: 'https://codecharter.tools'
+  comment:
+    description: |
+      Post (and update) a sticky summary comment on the pull request. Requires
+      `permissions: pull-requests: write`. Set to 'false' to rely on inline
+      annotations only.
+    required: false
+    default: 'true'
+  cache:
+    description: |
+      Cache the downloaded CLI binary between runs (via the Actions cache) to
+      skip re-downloading it each run. Set to 'false' to always download.
+    required: false
+    default: 'true'
+  comment-key:
+    description: |
+      Discriminator for the sticky PR comment. Leave empty to derive it from the
+      workflow, job, and solution (so multiple CodeCharter steps in one PR each keep
+      their own comment). Set an explicit value to control which runs share a
+      comment (e.g. a matrix dimension) or to merge several into one.
+    required: false
+    default: ''
+  sarif-output:
+    description: |
+      If set, additionally write a SARIF v2.1 file to this path (relative to the
+      repository root) for upload to GitHub Code Scanning. Leave empty to skip.
+    required: false
+    default: ''
+  github-token:
+    description: Token used to post the PR comment. Defaults to the workflow token.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  findings-total:
+    description: Total number of findings.
+  findings-error:
+    description: Number of error-level findings.
+  findings-warn:
+    description: Number of warning-level findings.
+  findings-info:
+    description: Number of info-level findings.
+  sarif-path:
+    description: Path to the generated SARIF file, if sarif-output was set.
+
+runs:
+  using: node24
+  main: dist/index.js

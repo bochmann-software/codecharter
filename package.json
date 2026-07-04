@@ -1,0 +1,37 @@
+{
+  "name": "codecharter-action",
+  "version": "1.7.3",
+  "private": true,
+  "description": "GitHub Action that runs the CodeCharter .NET code-quality CLI and annotates pull requests",
+  "main": "dist/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "dependencies": {
+    "@actions/cache": "^6.0.1",
+    "@actions/core": "^3.0.1",
+    "@actions/exec": "^3.0.0",
+    "@actions/github": "^9.1.1",
+    "@actions/http-client": "^4.0.1",
+    "@actions/io": "^3.0.2",
+    "@actions/tool-cache": "^4.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.4"
+  }
+}
