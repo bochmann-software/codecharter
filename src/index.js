@@ -813,6 +813,8 @@ async function run() {
       ...process.env,
       CODECHARTER_API_KEY: apiKey,
       CODECHARTER_PORTAL_URL: portal,
+      CODEGUARD_API_KEY: apiKey,
+      CODEGUARD_PORTAL_URL: portal,
       XDG_CONFIG_HOME: configDir,
     };
 
