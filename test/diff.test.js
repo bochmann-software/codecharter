@@ -86,7 +86,7 @@ test('resolveDiffArgs: a ref range runs git diff and writes the captured patch',
     return 0;
   };
   const result = await resolveDiffArgs('main..HEAD', workspace, tmp);
-  const expected = path.join(tmp, 'codeguard.diff');
+  const expected = path.join(tmp, 'codecharter.diff');
   assert.deepEqual(result, ['--diff', expected]);
   assert.equal(fs.readFileSync(expected, 'utf8'), 'diff --git a b\n');
   assert.equal(calledArgs.cmd, 'git');
@@ -98,7 +98,7 @@ test('resolveDiffArgs: a ref range runs git diff and writes the captured patch',
 test('resolveDiffArgs: an empty diff still returns args but warns nothing is analyzed', async () => {
   exec.exec = async () => 0; // no stdout → empty diff
   const result = await resolveDiffArgs('main..HEAD', workspace, tmp);
-  assert.deepEqual(result, ['--diff', path.join(tmp, 'codeguard.diff')]);
+  assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /resolved diff is empty/);
 });
@@ -129,7 +129,7 @@ test('resolveDiffArgs: "true" on a PR uses the merge-base when reachable', async
     return 0; // fetch
   };
   const result = await resolveDiffArgs('true', workspace, tmp);
-  assert.deepEqual(result, ['--diff', path.join(tmp, 'codeguard.diff')]);
+  assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
   const diffCall = seen.find((s) => s.includes('diff'));
   assert.ok(diffCall.includes('MERGEBASE'), 'diff is taken from merge-base..head');
   assert.ok(diffCall.includes('HEADSHA'));
@@ -150,7 +150,7 @@ test('resolveDiffArgs: "true" on a PR falls back to the base tip when merge-base
     return 0;
   };
   const result = await resolveDiffArgs('true', workspace, tmp);
-  assert.deepEqual(result, ['--diff', path.join(tmp, 'codeguard.diff')]);
+  assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
   assert.ok(diffCall.includes('BASESHA'), 'falls back to the base sha');
   assert.ok(diffCall.includes('HEADSHA'));
 });

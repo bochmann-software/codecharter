@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { core, github } from '../src/deps.js';
 import { upsertComment } from '../src/index.js';
 
-const MARKER = '<!-- codeguard-analysis:abc123 -->';
+const MARKER = '<!-- codecharter-analysis:abc123 -->';
 let saved;
 let warnings;
 let infos;
@@ -92,7 +92,7 @@ test('upsertComment: no existing comment → creates one with marker + body', as
   assert.equal(calls.updated.length, 0);
   assert.equal(calls.created[0].issue_number, 7);
   assert.equal(calls.created[0].body, `${MARKER}\nthe report`);
-  assert.ok(infos.some((m) => /Posted the CodeGuard PR comment/.test(m)));
+  assert.ok(infos.some((m) => /Posted the CodeCharter PR comment/.test(m)));
 });
 
 test('upsertComment: existing marker comment → updates it, not create', async () => {
@@ -106,7 +106,7 @@ test('upsertComment: existing marker comment → updates it, not create', async 
   assert.equal(calls.updated.length, 1);
   assert.equal(calls.updated[0].comment_id, 22);
   assert.equal(calls.updated[0].body, `${MARKER}\nnew report`);
-  assert.ok(infos.some((m) => /Updated the CodeGuard PR comment \(#22\)/.test(m)));
+  assert.ok(infos.some((m) => /Updated the CodeCharter PR comment \(#22\)/.test(m)));
 });
 
 test('upsertComment: a non-string comment body is skipped when scanning', async () => {

@@ -69,7 +69,7 @@ test('downloadArchive: success writes the archive and lower-cases the SHA header
     body: payload,
   });
   const { archive, expectedSha } = await downloadArchive('http://portal/cli', 'KEY', destDir, false);
-  assert.equal(archive, path.join(destDir, 'codeguard.tar.gz'));
+  assert.equal(archive, path.join(destDir, 'codecharter.tar.gz'));
   assert.equal(fs.readFileSync(archive, 'utf8'), payload);
   assert.equal(expectedSha, 'abcdef0123');
 });
@@ -77,7 +77,7 @@ test('downloadArchive: success writes the archive and lower-cases the SHA header
 test('downloadArchive: windows picks the .zip name', async () => {
   mockResponse({ statusCode: 200, headers: {}, body: 'zip' });
   const { archive, expectedSha } = await downloadArchive('http://portal/cli', 'KEY', destDir, true);
-  assert.equal(archive, path.join(destDir, 'codeguard.zip'));
+  assert.equal(archive, path.join(destDir, 'codecharter.zip'));
   assert.equal(expectedSha, null, 'no header → null digest');
 });
 

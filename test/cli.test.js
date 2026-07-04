@@ -99,8 +99,8 @@ test('obtainCli: an exact pin skips the manifest lookup and keys by the pin', as
   });
 
   assert.equal(http.calls, 0, 'exact pins never call the manifest endpoint');
-  assert.equal(exe, path.join(toolCache, 'codeguard-cli', platform, version, 'codeguard'));
-  assert.equal(planted.key, `codeguard-cli-${platform}-${version}`);
+  assert.equal(exe, path.join(toolCache, 'codecharter-cli', platform, version, 'codeguard'));
+  assert.equal(planted.key, `codecharter-cli-${platform}-${version}`);
 });
 
 test('obtainCli: a moving selector keys the cache by the manifest-resolved version', async () => {
@@ -124,8 +124,8 @@ test('obtainCli: a moving selector keys the cache by the manifest-resolved versi
   assert.equal(http.calls, 1);
   assert.match(http.lastUrl, /\/api\/v1\/cli\/linux-x64\/latest\/manifest$/);
   // Keyed by the resolved version — no per-day suffix.
-  assert.equal(planted.key, `codeguard-cli-${platform}-1.7.0`);
-  assert.equal(exe, path.join(toolCache, 'codeguard-cli', platform, '1.7.0', 'CodeGuard.Cli'));
+  assert.equal(planted.key, `codecharter-cli-${platform}-1.7.0`);
+  assert.equal(exe, path.join(toolCache, 'codecharter-cli', platform, '1.7.0', 'CodeGuard.Cli'));
 });
 
 test('obtainCli: when the manifest endpoint is unavailable, fall back to a per-day key', async () => {
@@ -143,7 +143,7 @@ test('obtainCli: when the manifest endpoint is unavailable, fall back to a per-d
     cacheEnabled: true,
   });
 
-  assert.match(planted.key, new RegExp(`^codeguard-cli-${platform}-v1-\\d{4}-\\d{2}-\\d{2}$`));
+  assert.match(planted.key, new RegExp(`^codecharter-cli-${platform}-v1-\\d{4}-\\d{2}-\\d{2}$`));
 });
 
 // --- fetchManifest ----------------------------------------------------------

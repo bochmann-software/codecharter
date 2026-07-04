@@ -31,7 +31,7 @@ function violation(severity, category, ruleName, line = 1) {
 
 test('buildComment: zero findings → single brightgreen badge line, no tables', () => {
   const md = buildComment({ violations: [] }, { total: 0, error: 0, warn: 0, info: 0 }, WS, baseOpts);
-  assert.match(md, /## CodeGuard Analysis/);
+  assert.match(md, /## CodeCharter Analysis/);
   assert.match(md, /issues-0-brightgreen/);
   assert.ok(!md.includes('<details>'), 'no category sections when clean');
 });
@@ -41,7 +41,7 @@ test('buildComment: titleSuffix is appended to the heading', () => {
     ...baseOpts,
     titleSuffix: 'samples/App.sln',
   });
-  assert.match(md, /## CodeGuard Analysis — `samples\/App\.sln`/);
+  assert.match(md, /## CodeCharter Analysis — `samples\/App\.sln`/);
 });
 
 test('buildComment: only the present severities get a count badge', () => {

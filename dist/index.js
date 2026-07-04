@@ -70172,10 +70172,16 @@ function discoverSolutions(workspace) {
   return chosen.sort(byDepthThenName);
 }
 function hasConfiguredProfiles(workspace) {
-  const configPath = path14.join(workspace, ".codecharter", "config.yml");
+  const configPath = [".codecharter", ".codeguard"].map((dir) => path14.join(workspace, dir, "config.yml")).find((candidate) => {
+    try {
+      return fs10.existsSync(candidate);
+    } catch {
+      return false;
+    }
+  });
+  if (!configPath) return false;
   let text;
   try {
-    if (!fs10.existsSync(configPath)) return false;
     text = fs10.readFileSync(configPath, "utf8");
   } catch {
     return false;

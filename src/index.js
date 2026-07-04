@@ -99,7 +99,9 @@ async function verifySha(archive, expectedSha) {
 
 /** Recursively finds the codecharter executable inside an extracted directory. */
 function findExecutable(root, isWindows) {
-  const names = isWindows ? new Set(['codecharter.exe', 'codeguard.exe', 'CodeCharter.Cli.exe', 'CodeGuard.Cli.exe']) : new Set(['codecharter', 'codeguard', 'CodeCharter.Cli', 'CodeGuard.Cli']);
+  const names = isWindows
+    ? new Set(['codecharter.exe', 'codeguard.exe', 'CodeCharter.Cli.exe', 'CodeGuard.Cli.exe'])
+    : new Set(['codecharter', 'codeguard', 'CodeCharter.Cli', 'CodeGuard.Cli']);
   const stack = [root];
   while (stack.length > 0) {
     const dir = stack.pop();
@@ -169,10 +171,21 @@ function discoverSolutions(workspace) {
  * alarm; a lenient scan is enough because profile slugs contain no `#` or `[`.
  */
 function hasConfiguredProfiles(workspace) {
-  const configPath = path.join(workspace, '.codecharter', 'config.yml');
+  // Primary .codecharter with a legacy .codeguard fallback, matching the CLI's
+  // dual-read so a repository configured before the rename is still detected.
+  const configPath = ['.codecharter', '.codeguard']
+    .map((dir) => path.join(workspace, dir, 'config.yml'))
+    .find((candidate) => {
+      try {
+        return fs.existsSync(candidate);
+      } catch {
+        return false;
+      }
+    });
+  if (!configPath) return false;
+
   let text;
   try {
-    if (!fs.existsSync(configPath)) return false;
     text = fs.readFileSync(configPath, 'utf8');
   } catch {
     // Unreadable config must not crash the run; treat it as "no profiles" so the

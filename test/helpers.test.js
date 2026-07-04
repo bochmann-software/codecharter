@@ -32,7 +32,7 @@ import {
 
 test('commentMarker: deterministic 12-hex tag in the expected envelope', () => {
   const m = commentMarker('workflow / job / sln');
-  assert.match(m, /^<!-- codeguard-analysis:[0-9a-f]{12} -->$/);
+  assert.match(m, /^<!-- codecharter-analysis:[0-9a-f]{12} -->$/);
   assert.equal(commentMarker('workflow / job / sln'), m, 'same input → same marker');
 });
 
