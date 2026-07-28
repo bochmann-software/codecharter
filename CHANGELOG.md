@@ -7,6 +7,21 @@ the latest release in its line.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-28
+
+### Added
+
+- New `mode` input with a `coverage` value that runs the CLI's test-coverage
+  gate: it discovers the test projects under `coverage-root`, runs them with
+  coverage collection, posts the uncovered regions as a sticky summary and check
+  run, and fails the step when line coverage is below the required minimum.
+  The threshold comes from `coverage.minimum-percent` in
+  `.codecharter/config.yml` unless the new `min-coverage` input overrides it.
+  Companion inputs: `coverage-root`, `skip-tests`, `results-root`,
+  `fail-on-threshold` and `coverage-report`; new outputs `coverage-percent`,
+  `coverage-met`, `coverage-uncovered-regions` and `coverage-report-path`.
+  This replaces the separate coverage action: one action now covers both halves
+  of the quality gate.
 ## [1.7.3] - 2026-07-03
 
 ### Fixed

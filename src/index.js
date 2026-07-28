@@ -504,6 +504,128 @@ function buildComment(report, counts, workspace, opts) {
   return lines.join('\n');
 }
 
+/**
+ * Flattens a `codecharter coverage` JSON report into the numbers the comment,
+ * the outputs and the gate all need. Missing or malformed fields degrade to
+ * "nothing measured" rather than to a passing gate.
+ */
+function coverageSummary(report) {
+  const s = (report && report.summary) || {};
+  const percent = typeof s.percent === 'number' ? s.percent : null;
+  const required = typeof s.minimumRequiredPercent === 'number' ? s.minimumRequiredPercent : null;
+  return {
+    total: Number(s.totalLines) || 0,
+    covered: Number(s.coveredLines) || 0,
+    percent,
+    required,
+    source: s.minimumRequiredPercentSource || 'default',
+    met: s.hasMetThreshold === true,
+    regions: (report && report.uncoveredRegions) || [],
+    projects: (report && report.testResults) || [],
+  };
+}
+
+/**
+ * Builds the Markdown report for a coverage run: a badge line, the uncovered
+ * regions grouped by file with linked locations, and a footer stating the gate
+ * verdict. Mirrors the shape of the analysis comment so both read alike.
+ */
+function buildCoverageComment(summary, workspace, opts) {
+  const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
+  const heading = titleSuffix ? `## CodeCharter Coverage — \`${titleSuffix}\`` : '## CodeCharter Coverage';
+  const lines = [heading, ''];
+
+  if (exitCode === 3 || summary.percent === null) {
+    lines.push('![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)', '');
+    lines.push('---', '_No coverage data was produced, so the gate could not be evaluated._');
+    return lines.join('\n');
+  }
+
+  const shown = summary.percent.toFixed(2);
+  const color = summary.met ? 'brightgreen' : 'red';
+  let badges = `![coverage](https://img.shields.io/badge/coverage-${encodeURIComponent(`${shown}%`)}-${color}?style=flat-square)`;
+  if (summary.required !== null) {
+    badges += ` ![required](https://img.shields.io/badge/required-${encodeURIComponent(`${summary.required}%`)}-blue?style=flat-square)`;
+  }
+  lines.push(badges, '');
+  lines.push(
+    `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`).`,
+    ''
+  );
+
+  const byFile = new Map();
+  for (const region of summary.regions) {
+    const key = displayPath(region.relativeFile || region.file, workspace);
+    if (!byFile.has(key)) byFile.set(key, []);
+    byFile.get(key).push(region);
+  }
+
+  let rendered = 0;
+  let truncated = false;
+  for (const [file, regions] of [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (truncated) break;
+    lines.push(
+      '<details>',
+      `<summary>${file} (${regions.length} uncovered region(s))</summary>`,
+      '',
+      '| Lines | Method | Location |',
+      '|-------|--------|----------|'
+    );
+    for (const region of regions) {
+      if (rendered >= MAX_COMMENT_ROWS) {
+        truncated = true;
+        break;
+      }
+      const numbers = region.lines || [];
+      const first = numbers[0];
+      const last = numbers[numbers.length - 1];
+      const span = numbers.length > 1 ? `${first}-${last}` : `${first ?? '?'}`;
+      const method = (region.method || '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+      const link =
+        repoFull && sha && first
+          ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})`
+          : `${file}:${first ?? '?'}`;
+      lines.push(`| ${span} | ${method} | ${link} |`);
+      rendered++;
+    }
+    lines.push('', '</details>', '');
+  }
+
+  if (truncated) {
+    lines.push(`_Showing the first ${MAX_COMMENT_ROWS} uncovered regions; the full report is in the job summary._`, '');
+  }
+
+  lines.push('---');
+  lines.push(coverageFooterLine(summary, failOnThreshold));
+  return lines.join('\n');
+}
+
+/** Footer stating whether the run blocks the merge and what to do about it. */
+function coverageFooterLine(summary, failOnThreshold) {
+  if (summary.met) return '_Coverage meets the required minimum._';
+  if (!failOnThreshold) {
+    return '_Coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._';
+  }
+  return '_Cover the regions above before merging, or lower `coverage.minimum-percent` in `.codecharter/config.yml`._';
+}
+
+/** Maps a coverage exit code to a check-run conclusion. */
+function coverageConclusion(exitCode, failOnThreshold) {
+  if (exitCode === 0) return 'success';
+  if (exitCode === 1) return failOnThreshold ? 'failure' : 'neutral';
+  return 'failure';
+}
+
+/** One-line check-run title for a coverage run. */
+function coverageTitle(exitCode, summary) {
+  if (exitCode === 2) return 'Tests failed or coverage was incomplete';
+  if (exitCode === 3) return 'No coverage data';
+  if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
+  if (summary.percent === null) return 'No coverage data';
+  const shown = `${summary.percent.toFixed(2)}%`;
+  return summary.met ? `Coverage ${shown}` : `Coverage ${shown} is below the required minimum`;
+}
+
 /** Writes the report to the job summary (best effort). */
 async function writeSummary(markdown) {
   try {
@@ -748,9 +870,114 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
   return exe;
 }
 
+/**
+ * Coverage mode: runs `codecharter coverage`, reports the uncovered regions and
+ * gates on the threshold. The CLI runs the tests itself, so this path only
+ * shapes arguments, renders the report and maps the exit code to a verdict.
+ */
+async function runCoverage(ctx) {
+  const { exe, env, workspace, tmp, portal, apiKey, options } = ctx;
+
+  const jsonPath = options.reportOutput
+    ? path.resolve(workspace, options.reportOutput)
+    : path.join(tmp, 'coverage.json');
+  const args = ['coverage', path.resolve(workspace, options.root || '.'), '--output-file', jsonPath];
+  if (options.minCoverage) args.push('--min-coverage', options.minCoverage);
+  if (options.skipTests) args.push('--skip-tests');
+  if (options.resultsRoot) args.push('--results-root', path.resolve(workspace, options.resultsRoot));
+
+  const hasDotnet = (await io.which('dotnet', false)) || process.env.DOTNET_ROOT;
+  if (!hasDotnet) {
+    core.warning(
+      'No .NET SDK detected on the runner. The coverage gate runs `dotnet test`, which needs one. ' +
+        'What to do: add `- uses: actions/setup-dotnet@v4` (with your target `dotnet-version`) before this action.'
+    );
+  }
+
+  const code = await exec.exec(exe, args, { env, ignoreReturnCode: true });
+
+  const report = readJson(jsonPath);
+  const summary = coverageSummary(report);
+  core.setOutput('coverage-percent', summary.percent === null ? '' : summary.percent);
+  core.setOutput('coverage-met', String(summary.met));
+  core.setOutput('coverage-uncovered-regions', summary.regions.length);
+  if (options.reportOutput) core.setOutput('coverage-report-path', jsonPath);
+
+  const repoFull = process.env.GITHUB_REPOSITORY || `${github.context.repo.owner}/${github.context.repo.repo}`;
+  const sha = github.context.payload.pull_request?.head?.sha || github.context.sha;
+  const titleSuffix = options.commentKey || options.root || '';
+  const discriminator =
+    options.commentKey || [process.env.GITHUB_WORKFLOW, process.env.GITHUB_JOB, 'coverage'].filter(Boolean).join(' / ');
+  const markdown = buildCoverageComment(summary, workspace, {
+    repoFull,
+    sha,
+    titleSuffix,
+    failOnThreshold: options.failOnThreshold,
+    exitCode: code,
+  });
+  await writeSummary(markdown);
+
+  const published = await publishViaPortal(portal, apiKey, {
+    repository: repoFull,
+    headSha: sha,
+    pullNumber: github.context.payload.pull_request?.number ?? null,
+    checkName: titleSuffix ? `CodeCharter Coverage / ${titleSuffix}` : 'CodeCharter Coverage',
+    conclusion: coverageConclusion(code, options.failOnThreshold),
+    title: coverageTitle(code, summary),
+    summary: markdown,
+    annotations: [],
+    comment: options.wantComment,
+    commentKey: discriminator,
+  });
+  if (!published && options.wantComment) {
+    await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
+  }
+
+  if (code === 0) return;
+  if (code === 1) {
+    const detail =
+      `Coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, below the required ` +
+      `${summary.required ?? 100}% (threshold from \`${summary.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(
+        `${detail} What to do: cover the regions listed above, or lower \`coverage.minimum-percent\` in ` +
+          '`.codecharter/config.yml` (or pass a different `min-coverage`).'
+      );
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
+  if (code === 2) {
+    core.setFailed(
+      'The coverage run failed because tests failed or the coverage data was incomplete. ' +
+        'What to do: fix the failing tests shown above; the gate only evaluates a complete run.'
+    );
+    return;
+  }
+  if (code === 3) {
+    core.setFailed(
+      'The coverage run produced no coverage data. What to do: make sure every test project references ' +
+        '`coverlet.collector`, and that the `coverage-root` input points at the tree that contains them.'
+    );
+    return;
+  }
+  core.setFailed(
+    `The coverage run could not start (exit code ${code === null ? 'null (process terminated)' : code}). ` +
+      'Common causes are a missing .NET SDK, an unwritable report path, or an invalid `.codecharter` config. ' +
+      'Check the messages above.'
+  );
+}
+
 async function run() {
   const apiKey = core.getInput('api-key', { required: true });
   core.setSecret(apiKey);
+
+  const mode = (core.getInput('mode') || 'analyze').toLowerCase();
+  if (mode !== 'analyze' && mode !== 'coverage') {
+    core.setFailed(`Unknown \`mode\`: "${mode}". Valid values are \`analyze\` (default) and \`coverage\`.`);
+    return;
+  }
 
   let solution = core.getInput('solution');
   const rules = core.getInput('rules');
@@ -775,7 +1002,7 @@ async function run() {
   // With no explicit input, auto-discover a project to analyze: prefer a
   // solution file (.sln/.slnx), fall back to a .csproj, and pick the
   // shallowest/alphabetically-first candidate so the choice is stable.
-  if (!solution.trim()) {
+  if (mode !== 'coverage' && !solution.trim()) {
     const candidates = discoverSolutions(workspace);
     if (candidates.length === 0) {
       core.setFailed(
@@ -830,6 +1057,29 @@ async function run() {
       CODEGUARD_PORTAL_URL: portal,
       XDG_CONFIG_HOME: configDir,
     };
+
+    if (mode === 'coverage') {
+      await runCoverage({
+        exe,
+        env,
+        workspace,
+        tmp,
+        portal,
+        apiKey,
+        options: {
+          root: core.getInput('coverage-root'),
+          minCoverage: core.getInput('min-coverage'),
+          skipTests: (core.getInput('skip-tests') || 'false').toLowerCase() === 'true',
+          resultsRoot: core.getInput('results-root'),
+          failOnThreshold: (core.getInput('fail-on-threshold') || 'true').toLowerCase() !== 'false',
+          reportOutput: core.getInput('coverage-report'),
+          wantComment,
+          commentKey,
+          githubToken,
+        },
+      });
+      return;
+    }
 
     // One analyze run, several outputs (CLI >= v1.0.6): github-annotations to
     // stdout for inline PR annotations, json to a temp file for the comment and
@@ -1091,6 +1341,12 @@ if (isMainModule(import.meta.url, process.argv[1])) {
 // the whole action.
 export {
   run,
+  runCoverage,
+  coverageSummary,
+  buildCoverageComment,
+  coverageFooterLine,
+  coverageConclusion,
+  coverageTitle,
   isMainModule,
   commentMarker,
   resolvePlatform,

@@ -7,6 +7,15 @@ branding:
   color: blue
 
 inputs:
+  mode:
+    description: |
+      What this step runs. `analyze` (the default) runs the rule analysis and is
+      configured by the inputs below it. `coverage` runs the test-coverage gate
+      instead: it executes your test projects with coverage collection and fails
+      when line coverage is below the configured minimum. The coverage inputs are
+      grouped at the end of this list and are ignored in `analyze` mode.
+    required: false
+    default: analyze
   solution:
     description: |
       Path to the .sln, .slnx, or .csproj file, relative to the repository root.
@@ -125,7 +134,56 @@ inputs:
     required: false
     default: ${{ github.token }}
 
+  coverage-root:
+    description: |
+      Coverage mode only. Directory tree searched for test projects, relative to
+      the repository root. Defaults to the repository root.
+    required: false
+    default: ''
+  min-coverage:
+    description: |
+      Coverage mode only. Minimum required line-coverage percent (0-100), written
+      locale-independently (e.g. `99.5`). Overrides `coverage.minimum-percent` in
+      `.codecharter/config.yml` for this run; leave empty to use the repo config.
+    required: false
+    default: ''
+  skip-tests:
+    description: |
+      Coverage mode only. When `true`, do not run the tests; analyze the coverage
+      files already present under the results root. Use this when a previous step
+      in the same job already ran `dotnet test` with coverage collection.
+    required: false
+    default: 'false'
+  results-root:
+    description: |
+      Coverage mode only. Directory for test and coverage artifacts, relative to
+      the repository root. Defaults to the CLI's own location under the coverage root.
+    required: false
+    default: ''
+  fail-on-threshold:
+    description: |
+      Coverage mode only. When `false`, coverage below the minimum is reported but
+      does not fail the step. Failing tests, missing coverage data and configuration
+      errors still fail regardless of this input.
+    required: false
+    default: 'true'
+  coverage-report:
+    description: |
+      Coverage mode only. Path (relative to the repository root) to write the JSON
+      coverage report to, so later steps can upload or post-process it. Leave empty
+      to keep the report in a temp directory that is removed when the step ends.
+    required: false
+    default: ''
+
 outputs:
+  coverage-percent:
+    description: Line-coverage percent from the coverage run; empty when no coverage data was produced.
+  coverage-met:
+    description: '"true" when coverage met the required minimum.'
+  coverage-uncovered-regions:
+    description: Number of uncovered regions in the coverage report.
+  coverage-report-path:
+    description: Path to the JSON coverage report, if coverage-report was set.
   findings-total:
     description: Total number of findings.
   findings-error:
