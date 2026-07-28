@@ -48,6 +48,7 @@ jobs:
 
 | Input | Required | Default | Description |
 |---|---|---|---|
+| `mode` | no | `analyze` | What this step runs: `analyze` for the rule analysis, `coverage` for the test-coverage gate (see below). The coverage inputs are listed at the end of this table |
 | `solution` | no | `''` (auto-discover) | Path to `.sln`, `.slnx`, or `.csproj` relative to the repo root. Leave empty to auto-discover (see below) |
 | `api-key` | yes | — | Your CodeCharter portal API key (see Setup) |
 | `rules` | no | `''` (auto) | Path to a local rules directory in your repo (e.g. `rules`). Leave empty to let the CLI use a `.codecharter/config.yml` profile and/or a `rules/` directory in the repo root if present, otherwise its bundled sample rules |
@@ -64,6 +65,43 @@ jobs:
 | `comment-key` | no | `''` (auto) | Discriminator for the sticky PR comment. Auto-derived from workflow + job + solution so multiple CodeCharter runs in one PR keep separate comments; set explicitly to control sharing (e.g. a matrix dimension) |
 | `sarif-output` | no | `''` | If set, also write a SARIF file to this path for GitHub Code Scanning |
 | `github-token` | no | `${{ github.token }}` | Token used to post the PR comment |
+| `coverage-root` | no | `''` (repo root) | Coverage mode only. Directory tree searched for test projects |
+| `min-coverage` | no | `''` (repo config) | Coverage mode only. Minimum required line coverage (0-100), e.g. `99.5`. Overrides `coverage.minimum-percent` from `.codecharter/config.yml` for this run |
+| `skip-tests` | no | `false` | Coverage mode only. Analyze the coverage files already present under the results root instead of running the tests |
+| `results-root` | no | `''` (CLI default) | Coverage mode only. Directory for test and coverage artifacts |
+| `fail-on-threshold` | no | `true` | Coverage mode only. Set `false` to report coverage below the minimum without failing the step. Failing tests, missing data and config errors still fail |
+| `coverage-report` | no | `''` | Coverage mode only. Path to write the JSON coverage report to, for later steps to upload or post-process |
+
+### Coverage gate (`mode: coverage`)
+
+`mode: coverage` runs the CLI's test-coverage gate instead of the rule analysis:
+it discovers the test projects under `coverage-root`, runs them with coverage
+collection, and fails the step when line coverage is below the required minimum.
+The threshold comes from `.codecharter/config.yml` unless `min-coverage`
+overrides it, so raising the bar is a repo change, not a workflow change.
+
+Every test project needs the `coverlet.collector` package; a project without it
+runs its tests but produces no coverage data, and the run says so per project.
+
+```yaml
+- uses: actions/setup-dotnet@v4
+  with:
+    dotnet-version: '9.0.x'
+
+- uses: bochmann-software/codecharter@v1
+  with:
+    mode: coverage
+    api-key: ${{ secrets.CODEGUARD_API_KEY }}
+```
+
+The step posts the same sticky summary as the analysis mode, listing every
+uncovered region with its file, line range and containing method. Analysis and
+coverage are separate steps (or jobs), so each keeps its own comment and check.
+
+Exit codes map onto the step result: coverage below the minimum fails unless
+`fail-on-threshold: false`, while failing tests, incomplete or missing coverage
+data and configuration errors always fail — the gate is fail-closed and never
+reports a pass it could not verify.
 
 ### Solution auto-discovery
 
@@ -227,6 +265,10 @@ it).
 | `findings-warn` | Number of warning-level findings |
 | `findings-info` | Number of info-level findings |
 | `sarif-path` | Path to the generated SARIF file, if `sarif-output` was set |
+| `coverage-percent` | Coverage mode: line-coverage percent; empty when no coverage data was produced |
+| `coverage-met` | Coverage mode: `"true"` when coverage met the required minimum |
+| `coverage-uncovered-regions` | Coverage mode: number of uncovered regions in the report |
+| `coverage-report-path` | Coverage mode: path to the JSON report, if `coverage-report` was set |
 
 ## How it works
 

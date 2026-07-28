@@ -22851,7 +22851,7 @@ var require_package = __commonJS({
   "node_modules/@actions/cache/package.json"(exports2, module) {
     module.exports = {
       name: "@actions/cache",
-      version: "6.0.1",
+      version: "6.1.0",
       description: "Actions cache lib",
       keywords: [
         "github",
@@ -31173,6 +31173,8 @@ function _unique(values) {
 // node_modules/@actions/cache/lib/cache.js
 var cache_exports = {};
 __export(cache_exports, {
+  CACHE_WRITE_DENIED_PREFIX: () => CACHE_WRITE_DENIED_PREFIX,
+  CacheWriteDeniedError: () => CacheWriteDeniedError,
   FinalizeCacheError: () => FinalizeCacheError,
   ReserveCacheError: () => ReserveCacheError,
   ValidationError: () => ValidationError,
@@ -65964,6 +65966,14 @@ var ReserveCacheError = class _ReserveCacheError extends Error {
     Object.setPrototypeOf(this, _ReserveCacheError.prototype);
   }
 };
+var CACHE_WRITE_DENIED_PREFIX = "cache write denied:";
+var CacheWriteDeniedError = class _CacheWriteDeniedError extends ReserveCacheError {
+  constructor(message) {
+    super(message);
+    this.name = "CacheWriteDeniedError";
+    Object.setPrototypeOf(this, _CacheWriteDeniedError.prototype);
+  }
+};
 var FinalizeCacheError = class _FinalizeCacheError extends Error {
   constructor(message) {
     super(message);
@@ -66156,7 +66166,7 @@ function saveCache2(paths_1, key_1, options_1) {
 }
 function saveCacheV1(paths_1, key_1, options_1) {
   return __awaiter23(this, arguments, void 0, function* (paths, key, options, enableCrossOsArchive = false) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     const compressionMethod = yield getCompressionMethod();
     let cacheId = -1;
     const cachePaths = yield resolvePaths(paths);
@@ -66190,7 +66200,11 @@ function saveCacheV1(paths_1, key_1, options_1) {
       } else if ((reserveCacheResponse === null || reserveCacheResponse === void 0 ? void 0 : reserveCacheResponse.statusCode) === 400) {
         throw new Error((_d = (_c = reserveCacheResponse === null || reserveCacheResponse === void 0 ? void 0 : reserveCacheResponse.error) === null || _c === void 0 ? void 0 : _c.message) !== null && _d !== void 0 ? _d : `Cache size of ~${Math.round(archiveFileSize / (1024 * 1024))} MB (${archiveFileSize} B) is over the data cap limit, not saving cache.`);
       } else {
-        throw new ReserveCacheError(`Unable to reserve cache with key ${key}, another job may be creating this cache. More details: ${(_e = reserveCacheResponse === null || reserveCacheResponse === void 0 ? void 0 : reserveCacheResponse.error) === null || _e === void 0 ? void 0 : _e.message}`);
+        const detailMessage = (_e = reserveCacheResponse === null || reserveCacheResponse === void 0 ? void 0 : reserveCacheResponse.error) === null || _e === void 0 ? void 0 : _e.message;
+        if (detailMessage === null || detailMessage === void 0 ? void 0 : detailMessage.startsWith(CACHE_WRITE_DENIED_PREFIX)) {
+          throw new CacheWriteDeniedError(`Unable to reserve cache with key ${key}. More details: ${detailMessage}`);
+        }
+        throw new ReserveCacheError(`Unable to reserve cache with key ${key}, another job may be creating this cache. More details: ${(_f = reserveCacheResponse === null || reserveCacheResponse === void 0 ? void 0 : reserveCacheResponse.error) === null || _f === void 0 ? void 0 : _f.message}`);
       }
       debug(`Saving Cache (ID: ${cacheId})`);
       yield saveCache(cacheId, archivePath, "", options);
@@ -66198,6 +66212,8 @@ function saveCacheV1(paths_1, key_1, options_1) {
       const typedError = error2;
       if (typedError.name === ValidationError.name) {
         throw error2;
+      } else if (typedError.name === CacheWriteDeniedError.name) {
+        warning(`Failed to save: ${typedError.message}`);
       } else if (typedError.name === ReserveCacheError.name) {
         info(`Failed to save: ${typedError.message}`);
       } else {
@@ -66219,6 +66235,7 @@ function saveCacheV1(paths_1, key_1, options_1) {
 }
 function saveCacheV2(paths_1, key_1, options_1) {
   return __awaiter23(this, arguments, void 0, function* (paths, key, options, enableCrossOsArchive = false) {
+    var _a;
     options = Object.assign(Object.assign({}, options), { uploadChunkSize: 64 * 1024 * 1024, uploadConcurrency: 8, useAzureSdk: true });
     const compressionMethod = yield getCompressionMethod();
     const twirpClient = internalCacheTwirpClient();
@@ -66250,7 +66267,7 @@ function saveCacheV2(paths_1, key_1, options_1) {
       try {
         const response = yield twirpClient.CreateCacheEntry(request2);
         if (!response.ok) {
-          if (response.message) {
+          if (response.message && !response.message.startsWith(CACHE_WRITE_DENIED_PREFIX)) {
             warning(`Cache reservation failed: ${response.message}`);
           }
           throw new Error(response.message || "Response was not ok");
@@ -66258,6 +66275,10 @@ function saveCacheV2(paths_1, key_1, options_1) {
         signedUploadUrl = response.signedUploadUrl;
       } catch (error2) {
         debug(`Failed to reserve cache: ${error2}`);
+        const errorMessage = (_a = error2 === null || error2 === void 0 ? void 0 : error2.message) !== null && _a !== void 0 ? _a : "";
+        if (errorMessage.startsWith(CACHE_WRITE_DENIED_PREFIX)) {
+          throw new CacheWriteDeniedError(`Unable to reserve cache with key ${key}. More details: ${errorMessage}`);
+        }
         throw new ReserveCacheError(`Unable to reserve cache with key ${key}, another job may be creating this cache.`);
       }
       debug(`Attempting to upload cache located at: ${archivePath}`);
@@ -66280,6 +66301,8 @@ function saveCacheV2(paths_1, key_1, options_1) {
       const typedError = error2;
       if (typedError.name === ValidationError.name) {
         throw error2;
+      } else if (typedError.name === CacheWriteDeniedError.name) {
+        warning(`Failed to save: ${typedError.message}`);
       } else if (typedError.name === ReserveCacheError.name) {
         info(`Failed to save: ${typedError.message}`);
       } else if (typedError.name === FinalizeCacheError.name) {
@@ -70419,6 +70442,101 @@ function buildComment(report, counts, workspace, opts) {
   lines.push(footerLine(failOn, counts));
   return lines.join("\n");
 }
+function coverageSummary(report) {
+  const s = report && report.summary || {};
+  const percent = typeof s.percent === "number" ? s.percent : null;
+  const required = typeof s.minimumRequiredPercent === "number" ? s.minimumRequiredPercent : null;
+  return {
+    total: Number(s.totalLines) || 0,
+    covered: Number(s.coveredLines) || 0,
+    percent,
+    required,
+    source: s.minimumRequiredPercentSource || "default",
+    met: s.hasMetThreshold === true,
+    regions: report && report.uncoveredRegions || [],
+    projects: report && report.testResults || []
+  };
+}
+function buildCoverageComment(summary2, workspace, opts) {
+  const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
+  const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
+  const lines = [heading, ""];
+  if (exitCode === 3 || summary2.percent === null) {
+    lines.push("![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)", "");
+    lines.push("---", "_No coverage data was produced, so the gate could not be evaluated._");
+    return lines.join("\n");
+  }
+  const shown = summary2.percent.toFixed(2);
+  const color = summary2.met ? "brightgreen" : "red";
+  let badges = `![coverage](https://img.shields.io/badge/coverage-${encodeURIComponent(`${shown}%`)}-${color}?style=flat-square)`;
+  if (summary2.required !== null) {
+    badges += ` ![required](https://img.shields.io/badge/required-${encodeURIComponent(`${summary2.required}%`)}-blue?style=flat-square)`;
+  }
+  lines.push(badges, "");
+  lines.push(
+    `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`).`,
+    ""
+  );
+  const byFile = /* @__PURE__ */ new Map();
+  for (const region of summary2.regions) {
+    const key = displayPath(region.relativeFile || region.file, workspace);
+    if (!byFile.has(key)) byFile.set(key, []);
+    byFile.get(key).push(region);
+  }
+  let rendered = 0;
+  let truncated = false;
+  for (const [file, regions] of [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (truncated) break;
+    lines.push(
+      "<details>",
+      `<summary>${file} (${regions.length} uncovered region(s))</summary>`,
+      "",
+      "| Lines | Method | Location |",
+      "|-------|--------|----------|"
+    );
+    for (const region of regions) {
+      if (rendered >= MAX_COMMENT_ROWS) {
+        truncated = true;
+        break;
+      }
+      const numbers = region.lines || [];
+      const first = numbers[0];
+      const last = numbers[numbers.length - 1];
+      const span = numbers.length > 1 ? `${first}-${last}` : `${first ?? "?"}`;
+      const method = (region.method || "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+      const link = repoFull && sha && first ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})` : `${file}:${first ?? "?"}`;
+      lines.push(`| ${span} | ${method} | ${link} |`);
+      rendered++;
+    }
+    lines.push("", "</details>", "");
+  }
+  if (truncated) {
+    lines.push(`_Showing the first ${MAX_COMMENT_ROWS} uncovered regions; the full report is in the job summary._`, "");
+  }
+  lines.push("---");
+  lines.push(coverageFooterLine(summary2, failOnThreshold));
+  return lines.join("\n");
+}
+function coverageFooterLine(summary2, failOnThreshold) {
+  if (summary2.met) return "_Coverage meets the required minimum._";
+  if (!failOnThreshold) {
+    return "_Coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._";
+  }
+  return "_Cover the regions above before merging, or lower `coverage.minimum-percent` in `.codecharter/config.yml`._";
+}
+function coverageConclusion(exitCode, failOnThreshold) {
+  if (exitCode === 0) return "success";
+  if (exitCode === 1) return failOnThreshold ? "failure" : "neutral";
+  return "failure";
+}
+function coverageTitle(exitCode, summary2) {
+  if (exitCode === 2) return "Tests failed or coverage was incomplete";
+  if (exitCode === 3) return "No coverage data";
+  if (exitCode === 64) return "Coverage could not run (usage, config, or environment error)";
+  if (summary2.percent === null) return "No coverage data";
+  const shown = `${summary2.percent.toFixed(2)}%`;
+  return summary2.met ? `Coverage ${shown}` : `Coverage ${shown} is below the required minimum`;
+}
 async function writeSummary(markdown) {
   try {
     await core.summary.addRaw(markdown).write();
@@ -70589,9 +70707,89 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
   }
   return exe;
 }
+async function runCoverage(ctx) {
+  const { exe, env, workspace, tmp, portal, apiKey, options } = ctx;
+  const jsonPath = options.reportOutput ? path14.resolve(workspace, options.reportOutput) : path14.join(tmp, "coverage.json");
+  const args = ["coverage", path14.resolve(workspace, options.root || "."), "--output-file", jsonPath];
+  if (options.minCoverage) args.push("--min-coverage", options.minCoverage);
+  if (options.skipTests) args.push("--skip-tests");
+  if (options.resultsRoot) args.push("--results-root", path14.resolve(workspace, options.resultsRoot));
+  const hasDotnet = await io.which("dotnet", false) || process.env.DOTNET_ROOT;
+  if (!hasDotnet) {
+    core.warning(
+      "No .NET SDK detected on the runner. The coverage gate runs `dotnet test`, which needs one. What to do: add `- uses: actions/setup-dotnet@v4` (with your target `dotnet-version`) before this action."
+    );
+  }
+  const code = await exec2.exec(exe, args, { env, ignoreReturnCode: true });
+  const report = readJson(jsonPath);
+  const summary2 = coverageSummary(report);
+  core.setOutput("coverage-percent", summary2.percent === null ? "" : summary2.percent);
+  core.setOutput("coverage-met", String(summary2.met));
+  core.setOutput("coverage-uncovered-regions", summary2.regions.length);
+  if (options.reportOutput) core.setOutput("coverage-report-path", jsonPath);
+  const repoFull = process.env.GITHUB_REPOSITORY || `${github.context.repo.owner}/${github.context.repo.repo}`;
+  const sha = github.context.payload.pull_request?.head?.sha || github.context.sha;
+  const titleSuffix = options.commentKey || options.root || "";
+  const discriminator = options.commentKey || [process.env.GITHUB_WORKFLOW, process.env.GITHUB_JOB, "coverage"].filter(Boolean).join(" / ");
+  const markdown = buildCoverageComment(summary2, workspace, {
+    repoFull,
+    sha,
+    titleSuffix,
+    failOnThreshold: options.failOnThreshold,
+    exitCode: code
+  });
+  await writeSummary(markdown);
+  const published = await publishViaPortal(portal, apiKey, {
+    repository: repoFull,
+    headSha: sha,
+    pullNumber: github.context.payload.pull_request?.number ?? null,
+    checkName: titleSuffix ? `CodeCharter Coverage / ${titleSuffix}` : "CodeCharter Coverage",
+    conclusion: coverageConclusion(code, options.failOnThreshold),
+    title: coverageTitle(code, summary2),
+    summary: markdown,
+    annotations: [],
+    comment: options.wantComment,
+    commentKey: discriminator
+  });
+  if (!published && options.wantComment) {
+    await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
+  }
+  if (code === 0) return;
+  if (code === 1) {
+    const detail = `Coverage is ${summary2.percent === null ? "unknown" : `${summary2.percent.toFixed(2)}%`}, below the required ${summary2.required ?? 100}% (threshold from \`${summary2.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(
+        `${detail} What to do: cover the regions listed above, or lower \`coverage.minimum-percent\` in \`.codecharter/config.yml\` (or pass a different \`min-coverage\`).`
+      );
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
+  if (code === 2) {
+    core.setFailed(
+      "The coverage run failed because tests failed or the coverage data was incomplete. What to do: fix the failing tests shown above; the gate only evaluates a complete run."
+    );
+    return;
+  }
+  if (code === 3) {
+    core.setFailed(
+      "The coverage run produced no coverage data. What to do: make sure every test project references `coverlet.collector`, and that the `coverage-root` input points at the tree that contains them."
+    );
+    return;
+  }
+  core.setFailed(
+    `The coverage run could not start (exit code ${code === null ? "null (process terminated)" : code}). Common causes are a missing .NET SDK, an unwritable report path, or an invalid \`.codecharter\` config. Check the messages above.`
+  );
+}
 async function run() {
   const apiKey = core.getInput("api-key", { required: true });
   core.setSecret(apiKey);
+  const mode = (core.getInput("mode") || "analyze").toLowerCase();
+  if (mode !== "analyze" && mode !== "coverage") {
+    core.setFailed(`Unknown \`mode\`: "${mode}". Valid values are \`analyze\` (default) and \`coverage\`.`);
+    return;
+  }
   let solution = core.getInput("solution");
   const rules = core.getInput("rules");
   const requireRules = (core.getInput("require-rules") || "false").toLowerCase() === "true";
@@ -70610,7 +70808,7 @@ async function run() {
   const isWindows2 = process.platform === "win32";
   const platform3 = resolvePlatform();
   const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
-  if (!solution.trim()) {
+  if (mode !== "coverage" && !solution.trim()) {
     const candidates = discoverSolutions(workspace);
     if (candidates.length === 0) {
       core.setFailed(
@@ -70650,6 +70848,28 @@ async function run() {
       CODEGUARD_PORTAL_URL: portal,
       XDG_CONFIG_HOME: configDir
     };
+    if (mode === "coverage") {
+      await runCoverage({
+        exe,
+        env,
+        workspace,
+        tmp,
+        portal,
+        apiKey,
+        options: {
+          root: core.getInput("coverage-root"),
+          minCoverage: core.getInput("min-coverage"),
+          skipTests: (core.getInput("skip-tests") || "false").toLowerCase() === "true",
+          resultsRoot: core.getInput("results-root"),
+          failOnThreshold: (core.getInput("fail-on-threshold") || "true").toLowerCase() !== "false",
+          reportOutput: core.getInput("coverage-report"),
+          wantComment,
+          commentKey,
+          githubToken
+        }
+      });
+      return;
+    }
     const jsonPath = path14.join(tmp, "results.json");
     const sarifPath = sarifOutput && sarifOutput.trim() ? path14.resolve(workspace, sarifOutput.trim()) : null;
     const args = [
@@ -70806,8 +71026,13 @@ export {
   MAX_COMMENT_ROWS,
   PLATFORMS,
   buildComment,
+  buildCoverageComment,
   commentMarker,
   conclusionFor,
+  coverageConclusion,
+  coverageFooterLine,
+  coverageSummary,
+  coverageTitle,
   discoverSolutions,
   displayPath,
   downloadArchive,
@@ -70826,6 +71051,7 @@ export {
   resolveDiffArgs,
   resolvePlatform,
   run,
+  runCoverage,
   severityBadge,
   severityLabel,
   severityRank,
