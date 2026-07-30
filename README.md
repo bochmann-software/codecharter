@@ -58,6 +58,7 @@ jobs:
 | `diff` | no | `false` | Scope analysis to changed lines only (see below). `true` diffs a PR against its base branch; also accepts a git ref range (e.g. `main..HEAD`) or a path to a unified diff file |
 | `baseline` | no | `''` | Path to a committed baseline file of accepted findings (see below). When set, only findings not in the baseline are reported and gated, so existing findings are tolerated and only new ones fail |
 | `telemetry` | no | `false` | Opt-in: send one anonymous usage event per run (tool name, latency bucket, per-rule finding counts, hashed workspace id) to the CodeCharter endpoint. Off by default; no source, paths, or code are ever sent |
+| `badge` | no | `false` | Opt-in: attach the run's aggregate numbers (coverage percent and line totals, finding counts by severity, test counts) plus the branch to the authenticated check report, so the portal can serve repository badges (see below). Nothing is stored otherwise. Valid in both modes |
 | `version` | no | `latest` | CLI version selector — `latest`, `v1`, `v1.4`, or an exact pin like `v1.4.2` |
 | `portal-base-url` | no | `https://codecharter.tools` | Override only for self-hosted or staging deployments |
 | `comment` | no | `true` | Post and update a sticky summary comment on the PR (needs `pull-requests: write`). Set `false` for annotations only |
@@ -97,6 +98,11 @@ runs its tests but produces no coverage data, and the run says so per project.
 The step posts the same sticky summary as the analysis mode, listing every
 uncovered region with its file, line range and containing method. Analysis and
 coverage are separate steps (or jobs), so each keeps its own comment and check.
+
+When the CLI reports per-project test counts (v1.4.5 and newer), the summary
+also carries a compact `Tests | Passed | Failed | Skipped` table with the totals
+summed over all test projects. Older CLIs report no counts, and then the table
+is simply left out.
 
 Exit codes map onto the step result: coverage below the minimum fails unless
 `fail-on-threshold: false`, while failing tests, incomplete or missing coverage
@@ -255,6 +261,38 @@ extra secret is needed.
 
 Requires a CLI with telemetry support (`version: latest`, the default, satisfies
 it).
+
+### Repository badges (opt-in)
+
+Set `badge: true` to let the portal serve a coverage or findings badge for the
+repository. It is **off by default**: without it the check report the action
+already posts carries no numbers to store, and the portal has nothing to render
+a badge from.
+
+```yaml
+- uses: bochmann-software/codecharter@v1
+  with:
+    mode: coverage
+    badge: true
+    api-key: ${{ secrets.CODECHARTER_API_KEY }}
+```
+
+What gets attached are aggregates only — never source, file paths, or code:
+
+| Field | Filled by | Contents |
+|---|---|---|
+| `branch` | both modes | The branch the run measured, and whether it is the repository's default branch |
+| `coverage` | coverage mode | Percent (truncated to two decimals, so 99.999% never shows as 100%), required percent, whether the gate was met, covered and measurable lines |
+| `testCounts` | coverage mode | Total, passed, failed and skipped tests, summed over the test projects that report counts (CLI v1.4.5+); absent for older CLIs |
+| `findings` | analyze mode | Number of error, warning and info findings |
+
+The numbers travel inside the existing authenticated `POST` to the portal, so no
+extra secret or permission is needed. Enable the badge for the repository in the
+portal (**Repository → Badges**), which yields the badge URL and a Markdown
+snippet to paste into your README. The badge shows the last run on the default
+branch, so keep `badge: true` on the workflow that runs there. Turning the
+toggle off in the portal stops serving the badge; turning the input off stops
+sending the numbers in the first place.
 
 ## Outputs
 

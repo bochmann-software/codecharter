@@ -90,6 +90,16 @@ inputs:
       default, satisfies it).
     required: false
     default: 'false'
+  badge:
+    description: |
+      Opt-in; only with `badge: true` are coverage/finding numbers attached to the
+      authenticated check report so the portal can serve repository badges;
+      nothing is stored otherwise. The attached numbers are aggregates only
+      (coverage percent and line totals, finding counts by severity, test counts)
+      plus the branch they were measured on. Valid in both modes; enable the badge
+      for the repository in the portal to get the badge URL.
+    required: false
+    default: 'false'
   version:
     description: |
       CodeCharter CLI version selector. Use 'latest' (recommended), 'v1',

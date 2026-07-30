@@ -7,6 +7,17 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Added
+
+- New opt-in `badge` input. With `badge: true` the run attaches its aggregate
+  numbers — coverage percent and line totals, finding counts by severity, test
+  counts, and the branch they were measured on — to the check report the action
+  already posts to the portal, so the portal can serve repository badges.
+  Nothing is attached without it. Valid in both `analyze` and `coverage` mode.
+- The coverage summary now shows a `Tests | Passed | Failed | Skipped` table
+  with the counts summed over the test projects that report them (CLI v1.4.5 and
+  newer). Reports from older CLIs carry no counts and omit the table.
+
 ## [1.8.0] - 2026-07-28
 
 ### Added
