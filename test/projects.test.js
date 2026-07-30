@@ -93,9 +93,52 @@ test('testTableRows: a failing project keeps its reason and shows its counts', (
   assert.equal(rows[3], '| **Σ 1 project** | ❌ | **10** | **8** | **2** | **0** |');
 });
 
+test('testTableRows: renders a passing project with its counts and the header', () => {
+  assert.deepEqual(
+    testTableRows([passing('A.Tests', { total: 3, passed: 2, failed: 1, skipped: 0 })], {
+      total: 3,
+      passed: 2,
+      failed: 1,
+      skipped: 0,
+    }),
+    [
+      '| Project | Result | Tests | Passed | Failed | Skipped |',
+      '|---------|--------|-------|--------|--------|---------|',
+      '| A.Tests | ✅ | 3 | 2 | 1 | 0 |',
+      '| **Σ 1 project** | ✅ | **3** | **2** | **1** | **0** |',
+      '',
+    ]
+  );
+});
+
+test('testTableRows: a run with no test projects renders nothing at all', () => {
+  assert.deepEqual(testTableRows([], null), []);
+  assert.deepEqual(testTableRows(undefined, null), []);
+});
+
 test('testTableRows: a project name with a pipe cannot break the table', () => {
   const rows = testTableRows([passing('A|B\\C.Tests')], null);
   assert.match(rows[2], /\| A\\\|B\\\\C\.Tests \|/);
+});
+
+test('testTableRows: a newline in a name or a reason cannot break out of the row', () => {
+  const rows = testTableRows(
+    [
+      {
+        project: 'A.Tests\n| **Σ 9 projects** | ✅ | 9 | 9 | 0 | 0 |',
+        exitCode: 1,
+        succeeded: false,
+        failureReason: 'crashed\r\n## Everything is fine',
+      },
+    ],
+    null
+  );
+  assert.equal(rows.length, 5, 'header, separator, one project row, the totals row and the trailing blank line');
+  assert.doesNotMatch(rows[2], /[\r\n]/, 'the row stays on one line');
+  assert.match(
+    rows[2],
+    /^\| A\.Tests \\\| \*\*Σ 9 projects\*\* \\\| ✅ \\\| 9 \\\| 9 \\\| 0 \\\| 0 \\\| \| ❌ crashed ## Everything is fine \|/
+  );
 });
 
 test('testTableRows: a nameless project still gets a row', () => {

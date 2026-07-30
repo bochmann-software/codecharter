@@ -70090,7 +70090,7 @@ var MAX_COMMENT_ROWS = 100;
 var MAX_COMMENT_CHARS = 6e4;
 var EM_DASH = "\u2014";
 function escapeCell(value) {
-  return String(value ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+  return String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 function commentMarker(discriminator) {
   const tag = crypto5.createHash("sha1").update(discriminator || "default").digest("hex").slice(0, 12);
@@ -70465,13 +70465,13 @@ function coverageSummary(report) {
     testCounts: testCountsFor(report && report.testResults)
   };
 }
+var COUNT_FIELDS = ["total", "passed", "failed", "skipped"];
 function testCountsFor(projects) {
-  const fields = ["total", "passed", "failed", "skipped"];
   const totals = { total: 0, passed: 0, failed: 0, skipped: 0 };
   let any = false;
   for (const project of projects || []) {
     if (!project || typeof project !== "object") continue;
-    const numbers = fields.filter((f) => Number.isFinite(project[f]));
+    const numbers = COUNT_FIELDS.filter((f) => Number.isFinite(project[f]));
     if (numbers.length === 0) continue;
     any = true;
     for (const field of numbers) totals[field] += project[field];
@@ -70482,7 +70482,6 @@ var TEST_TABLE_HEADER = [
   "| Project | Result | Tests | Passed | Failed | Skipped |",
   "|---------|--------|-------|--------|--------|---------|"
 ];
-var COUNT_FIELDS = ["total", "passed", "failed", "skipped"];
 function projectFailed(project) {
   if (typeof project.succeeded === "boolean") return !project.succeeded;
   return Number.isFinite(project.exitCode) && project.exitCode !== 0;
@@ -70499,11 +70498,7 @@ function projectRow(project) {
   return `| ${escapeCell(project.project || "(unknown)")} | ${projectResultCell(project)} | ${cells.join(" | ")} |`;
 }
 function sortTestProjects(projects) {
-  return [...projects].sort((a, b) => {
-    const failedA = projectFailed(a);
-    if (failedA !== projectFailed(b)) return failedA ? -1 : 1;
-    return String(a.project || "").localeCompare(String(b.project || ""));
-  });
+  return projects.map((project) => ({ project, failed: projectFailed(project), name: String(project.project || "") })).sort((a, b) => a.failed === b.failed ? a.name.localeCompare(b.name) : a.failed ? -1 : 1).map((entry) => entry.project);
 }
 function testTotalsRow(projects, counts) {
   const label = `**\u03A3 ${projects.length} project${projects.length === 1 ? "" : "s"}**`;
@@ -70563,22 +70558,29 @@ function analysisBadgePayload(counts) {
 }
 var TEST_TABLE_MODES = ["full", "failing", "totals"];
 function buildCoverageComment(summary2, workspace, opts) {
+  const { titleSuffix, exitCode } = opts;
+  const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
+  if (exitCode === 3 || summary2.percent === null) {
+    return [
+      heading,
+      "",
+      "![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)",
+      "",
+      "---",
+      "_No coverage data was produced, so the gate could not be evaluated._"
+    ].join("\n");
+  }
+  const head = coverageHeadLines(summary2, heading);
+  const tail = coverageRegionLines(summary2, workspace, opts);
   let markdown = "";
   for (const mode of TEST_TABLE_MODES) {
-    markdown = renderCoverageComment(summary2, workspace, opts, mode);
+    markdown = [...head, ...testTableRows(summary2.projects, summary2.testCounts, mode), ...tail].join("\n");
     if (markdown.length <= MAX_COMMENT_CHARS) break;
   }
   return markdown;
 }
-function renderCoverageComment(summary2, workspace, opts, tableMode) {
-  const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
-  const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
+function coverageHeadLines(summary2, heading) {
   const lines = [heading, ""];
-  if (exitCode === 3 || summary2.percent === null) {
-    lines.push("![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)", "");
-    lines.push("---", "_No coverage data was produced, so the gate could not be evaluated._");
-    return lines.join("\n");
-  }
   const shown = summary2.percent.toFixed(2);
   const color = summary2.met ? "brightgreen" : "red";
   let badges = `![coverage](https://img.shields.io/badge/coverage-${encodeURIComponent(`${shown}%`)}-${color}?style=flat-square)`;
@@ -70590,7 +70592,11 @@ function renderCoverageComment(summary2, workspace, opts, tableMode) {
     `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`).`,
     ""
   );
-  lines.push(...testTableRows(summary2.projects, summary2.testCounts, tableMode));
+  return lines;
+}
+function coverageRegionLines(summary2, workspace, opts) {
+  const { repoFull, sha, failOnThreshold } = opts;
+  const lines = [];
   const byFile = /* @__PURE__ */ new Map();
   for (const region of summary2.regions) {
     const key = displayPath(region.relativeFile || region.file, workspace);
@@ -70629,7 +70635,7 @@ function renderCoverageComment(summary2, workspace, opts, tableMode) {
   }
   lines.push("---");
   lines.push(coverageFooterLine(summary2, failOnThreshold));
-  return lines.join("\n");
+  return lines;
 }
 function coverageFooterLine(summary2, failOnThreshold) {
   if (summary2.met) return "_Coverage meets the required minimum._";

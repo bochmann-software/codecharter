@@ -21,11 +21,15 @@ const MAX_COMMENT_CHARS = 60000;
 const EM_DASH = '—';
 
 /**
- * Escapes a value for a Markdown table cell. Backslashes go first, then pipes,
- * so a value containing a backslash cannot break the cell (or double-escape).
+ * Escapes a value for a Markdown table cell. Line breaks collapse to spaces
+ * first — a newline ends the row, and everything after it would be rendered as
+ * free-form Markdown in a comment posted under the action's identity, which is
+ * enough to forge rows or a verdict. Backslashes go before pipes so a value
+ * containing a backslash cannot break the cell (or double-escape).
  */
 function escapeCell(value) {
   return String(value ?? '')
+    .replace(/[\r\n]+/g, ' ')
     .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|');
 }
@@ -547,6 +551,9 @@ function coverageSummary(report) {
   };
 }
 
+/** The count fields a project may carry, in the order the table shows them. */
+const COUNT_FIELDS = ['total', 'passed', 'failed', 'skipped'];
+
 /**
  * Sums the per-project test counts a coverage report carries (CLI >= v1.4.5).
  * Projects that report no counts at all — every report written by an older CLI,
@@ -556,12 +563,11 @@ function coverageSummary(report) {
  * rather than as zero tests.
  */
 function testCountsFor(projects) {
-  const fields = ['total', 'passed', 'failed', 'skipped'];
   const totals = { total: 0, passed: 0, failed: 0, skipped: 0 };
   let any = false;
   for (const project of projects || []) {
     if (!project || typeof project !== 'object') continue;
-    const numbers = fields.filter((f) => Number.isFinite(project[f]));
+    const numbers = COUNT_FIELDS.filter((f) => Number.isFinite(project[f]));
     if (numbers.length === 0) continue;
     any = true;
     for (const field of numbers) totals[field] += project[field];
@@ -569,13 +575,11 @@ function testCountsFor(projects) {
   return any ? totals : null;
 }
 
+/** Header and separator row of the per-project test table. */
 const TEST_TABLE_HEADER = [
   '| Project | Result | Tests | Passed | Failed | Skipped |',
   '|---------|--------|-------|--------|--------|---------|',
 ];
-
-/** The count fields a project may carry, in the order the table shows them. */
-const COUNT_FIELDS = ['total', 'passed', 'failed', 'skipped'];
 
 /**
  * Whether a project's test run did not succeed. `succeeded` is authoritative
@@ -605,13 +609,16 @@ function projectRow(project) {
   return `| ${escapeCell(project.project || '(unknown)')} | ${projectResultCell(project)} | ${cells.join(' | ')} |`;
 }
 
-/** Failing projects first (they are what the reader came for), then by name. */
+/**
+ * Failing projects first (they are what the reader came for), then by name. The
+ * sort keys are computed once per project rather than inside the comparator, so
+ * the size-degradation loop can re-sort without re-deriving them each time.
+ */
 function sortTestProjects(projects) {
-  return [...projects].sort((a, b) => {
-    const failedA = projectFailed(a);
-    if (failedA !== projectFailed(b)) return failedA ? -1 : 1;
-    return String(a.project || '').localeCompare(String(b.project || ''));
-  });
+  return projects
+    .map((project) => ({ project, failed: projectFailed(project), name: String(project.project || '') }))
+    .sort((a, b) => (a.failed === b.failed ? a.name.localeCompare(b.name) : a.failed ? -1 : 1))
+    .map((entry) => entry.project);
 }
 
 /** The closing row: the sums, or em-dashes when no project reported counts. */
@@ -721,31 +728,36 @@ const TEST_TABLE_MODES = ['full', 'failing', 'totals'];
  * a body GitHub might reject beats no report at all.
  */
 function buildCoverageComment(summary, workspace, opts) {
+  const { titleSuffix, exitCode } = opts;
+  const heading = titleSuffix ? `## CodeCharter Coverage — \`${titleSuffix}\`` : '## CodeCharter Coverage';
+
+  if (exitCode === 3 || summary.percent === null) {
+    return [
+      heading,
+      '',
+      '![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)',
+      '',
+      '---',
+      '_No coverage data was produced, so the gate could not be evaluated._',
+    ].join('\n');
+  }
+
+  // Everything around the test table is the same at every detail level, so it is
+  // built once and only the table is re-rendered while looking for a fit.
+  const head = coverageHeadLines(summary, heading);
+  const tail = coverageRegionLines(summary, workspace, opts);
+
   let markdown = '';
   for (const mode of TEST_TABLE_MODES) {
-    markdown = renderCoverageComment(summary, workspace, opts, mode);
+    markdown = [...head, ...testTableRows(summary.projects, summary.testCounts, mode), ...tail].join('\n');
     if (markdown.length <= MAX_COMMENT_CHARS) break;
   }
   return markdown;
 }
 
-/**
- * Renders the report at one test-table detail level: a badge line, the coverage
- * line, the test table, the uncovered regions grouped by file with linked
- * locations, and a footer stating the gate verdict. Mirrors the shape of the
- * analysis comment so both read alike.
- */
-function renderCoverageComment(summary, workspace, opts, tableMode) {
-  const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
-  const heading = titleSuffix ? `## CodeCharter Coverage — \`${titleSuffix}\`` : '## CodeCharter Coverage';
+/** Heading, coverage badges and the one-line coverage verdict. */
+function coverageHeadLines(summary, heading) {
   const lines = [heading, ''];
-
-  if (exitCode === 3 || summary.percent === null) {
-    lines.push('![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)', '');
-    lines.push('---', '_No coverage data was produced, so the gate could not be evaluated._');
-    return lines.join('\n');
-  }
-
   const shown = summary.percent.toFixed(2);
   const color = summary.met ? 'brightgreen' : 'red';
   let badges = `![coverage](https://img.shields.io/badge/coverage-${encodeURIComponent(`${shown}%`)}-${color}?style=flat-square)`;
@@ -757,7 +769,17 @@ function renderCoverageComment(summary, workspace, opts, tableMode) {
     `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`).`,
     ''
   );
-  lines.push(...testTableRows(summary.projects, summary.testCounts, tableMode));
+  return lines;
+}
+
+/**
+ * The uncovered regions grouped by file with linked locations, closed by the
+ * footer stating the gate verdict. Mirrors the shape of the analysis comment so
+ * both read alike.
+ */
+function coverageRegionLines(summary, workspace, opts) {
+  const { repoFull, sha, failOnThreshold } = opts;
+  const lines = [];
 
   const byFile = new Map();
   for (const region of summary.regions) {
@@ -803,7 +825,7 @@ function renderCoverageComment(summary, workspace, opts, tableMode) {
 
   lines.push('---');
   lines.push(coverageFooterLine(summary, failOnThreshold));
-  return lines.join('\n');
+  return lines;
 }
 
 /** Footer stating whether the run blocks the merge and what to do about it. */
