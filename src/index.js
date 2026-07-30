@@ -10,6 +10,27 @@ import { core, exec, io, tc, cache, github, HttpClient } from './deps.js';
 const MAX_COMMENT_ROWS = 100;
 
 /**
+ * Character budget for an assembled report. GitHub rejects an issue comment
+ * above 65536 characters and a check-run summary above 65535; the budget stays
+ * well below both so the marker line, and anything the portal wraps around the
+ * body, still fit.
+ */
+const MAX_COMMENT_CHARS = 60000;
+
+/** Placeholder for a table cell whose number the report does not carry. */
+const EM_DASH = '—';
+
+/**
+ * Escapes a value for a Markdown table cell. Backslashes go first, then pipes,
+ * so a value containing a backslash cannot break the cell (or double-escape).
+ */
+function escapeCell(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|');
+}
+
+/**
  * Hidden marker that lets the action find and update its own comment instead of
  * posting a new one each run. It embeds a hash of a discriminator so that
  * several CodeCharter steps in the same PR (different workflows/jobs/solutions, or
@@ -483,9 +504,7 @@ function buildComment(report, counts, workspace, opts) {
         truncated = true;
         break;
       }
-      // Escape backslashes first, then pipes, so a rule name containing a
-      // backslash cannot break the Markdown table cell (or double-escape).
-      const rule = (v.ruleName || '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+      const rule = escapeCell(v.ruleName);
       lines.push(`| ${severityBadge(v.severity)} | ${rule} | ${locationLink(v, workspace, repoFull, sha)} |`);
       rendered++;
     }
@@ -550,19 +569,83 @@ function testCountsFor(projects) {
   return any ? totals : null;
 }
 
+const TEST_TABLE_HEADER = [
+  '| Project | Result | Tests | Passed | Failed | Skipped |',
+  '|---------|--------|-------|--------|--------|---------|',
+];
+
+/** The count fields a project may carry, in the order the table shows them. */
+const COUNT_FIELDS = ['total', 'passed', 'failed', 'skipped'];
+
 /**
- * Renders the aggregate test counts as a compact table for the sticky comment.
- * Returns an empty array when the report carries no counts, so a report from an
- * older CLI simply omits the table instead of showing zeros.
+ * Whether a project's test run did not succeed. `succeeded` is authoritative
+ * when present; a report that predates it is judged by its exit code.
  */
-function testCountRows(counts) {
-  if (!counts) return [];
-  return [
-    '| Tests | Passed | Failed | Skipped |',
-    '|-------|--------|--------|---------|',
-    `| ${counts.total} | ${counts.passed} | ${counts.failed} | ${counts.skipped} |`,
-    '',
-  ];
+function projectFailed(project) {
+  if (typeof project.succeeded === 'boolean') return !project.succeeded;
+  return Number.isFinite(project.exitCode) && project.exitCode !== 0;
+}
+
+/**
+ * The Result cell for one project: a bare check mark when it passed, otherwise
+ * a cross plus why it failed. The CLI's own wording ("timed out after 1800s")
+ * is preferred; without it the exit code is the only fact worth showing.
+ */
+function projectResultCell(project) {
+  if (!projectFailed(project)) return '✅';
+  const reason = typeof project.failureReason === 'string' ? project.failureReason.trim() : '';
+  const fallback = Number.isFinite(project.exitCode) && project.exitCode !== 0 ? `exit code ${project.exitCode}` : '';
+  const detail = reason || fallback;
+  return detail ? `❌ ${escapeCell(detail)}` : '❌';
+}
+
+/** One table row for a project; counts it does not report show as em-dashes. */
+function projectRow(project) {
+  const cells = COUNT_FIELDS.map((f) => (Number.isFinite(project[f]) ? project[f] : EM_DASH));
+  return `| ${escapeCell(project.project || '(unknown)')} | ${projectResultCell(project)} | ${cells.join(' | ')} |`;
+}
+
+/** Failing projects first (they are what the reader came for), then by name. */
+function sortTestProjects(projects) {
+  return [...projects].sort((a, b) => {
+    const failedA = projectFailed(a);
+    if (failedA !== projectFailed(b)) return failedA ? -1 : 1;
+    return String(a.project || '').localeCompare(String(b.project || ''));
+  });
+}
+
+/** The closing row: the sums, or em-dashes when no project reported counts. */
+function testTotalsRow(projects, counts) {
+  const label = `**Σ ${projects.length} project${projects.length === 1 ? '' : 's'}**`;
+  const icon = projects.some(projectFailed) ? '❌' : '✅';
+  const cells = counts ? COUNT_FIELDS.map((f) => `**${counts[f]}**`) : COUNT_FIELDS.map(() => EM_DASH);
+  return `| ${label} | ${icon} | ${cells.join(' | ')} |`;
+}
+
+/**
+ * Renders the test results as a table: one row per test project, closed by a
+ * totals row that is always present. `mode` selects how much detail survives the
+ * comment's size budget — `full` shows every project, `failing` drops the
+ * passing ones (noting how many), `totals` keeps only the sums. Returns an empty
+ * array when the report knows of no test projects at all (a `skip-tests` run),
+ * so nothing is claimed that was not measured.
+ */
+function testTableRows(projects, counts, mode = 'full') {
+  const list = (projects || []).filter((p) => p && typeof p === 'object');
+  if (list.length === 0) return [];
+
+  const rows = [...TEST_TABLE_HEADER];
+  const notes = [];
+  if (mode !== 'totals') {
+    const sorted = sortTestProjects(list);
+    const shown = mode === 'failing' ? sorted.filter(projectFailed) : sorted;
+    for (const project of shown) rows.push(projectRow(project));
+    const omitted = sorted.length - shown.length;
+    if (omitted > 0)
+      notes.push('', `_… ${omitted} passing project(s) omitted to keep this report within GitHub's size limit._`);
+  }
+  rows.push(testTotalsRow(list, counts));
+  return [...rows, ...notes, ''];
 }
 
 /**
@@ -626,12 +709,33 @@ function analysisBadgePayload(counts) {
   });
 }
 
+/** How much of the test table to keep, most detailed first. */
+const TEST_TABLE_MODES = ['full', 'failing', 'totals'];
+
 /**
- * Builds the Markdown report for a coverage run: a badge line, the uncovered
- * regions grouped by file with linked locations, and a footer stating the gate
- * verdict. Mirrors the shape of the analysis comment so both read alike.
+ * Builds the Markdown report for a coverage run, degrading the test table until
+ * the result fits the character budget: every project, then only the failing
+ * ones, then the totals alone. The same body is posted as the sticky comment and
+ * as the check-run summary, so one guard covers both limits. The last mode is
+ * returned even if it still does not fit — there is nothing smaller to try, and
+ * a body GitHub might reject beats no report at all.
  */
 function buildCoverageComment(summary, workspace, opts) {
+  let markdown = '';
+  for (const mode of TEST_TABLE_MODES) {
+    markdown = renderCoverageComment(summary, workspace, opts, mode);
+    if (markdown.length <= MAX_COMMENT_CHARS) break;
+  }
+  return markdown;
+}
+
+/**
+ * Renders the report at one test-table detail level: a badge line, the coverage
+ * line, the test table, the uncovered regions grouped by file with linked
+ * locations, and a footer stating the gate verdict. Mirrors the shape of the
+ * analysis comment so both read alike.
+ */
+function renderCoverageComment(summary, workspace, opts, tableMode) {
   const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage — \`${titleSuffix}\`` : '## CodeCharter Coverage';
   const lines = [heading, ''];
@@ -653,7 +757,7 @@ function buildCoverageComment(summary, workspace, opts) {
     `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`).`,
     ''
   );
-  lines.push(...testCountRows(summary.testCounts));
+  lines.push(...testTableRows(summary.projects, summary.testCounts, tableMode));
 
   const byFile = new Map();
   for (const region of summary.regions) {
@@ -682,7 +786,7 @@ function buildCoverageComment(summary, workspace, opts) {
       const first = numbers[0];
       const last = numbers[numbers.length - 1];
       const span = numbers.length > 1 ? `${first}-${last}` : `${first ?? '?'}`;
-      const method = (region.method || '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+      const method = escapeCell(region.method);
       const link =
         repoFull && sha && first
           ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})`
@@ -1464,7 +1568,10 @@ export {
   runCoverage,
   coverageSummary,
   testCountsFor,
-  testCountRows,
+  testTableRows,
+  projectFailed,
+  projectResultCell,
+  sortTestProjects,
   floorPercent,
   buildBadgePayload,
   withBadge,
@@ -1504,4 +1611,5 @@ export {
   titleFor,
   PLATFORMS,
   MAX_COMMENT_ROWS,
+  MAX_COMMENT_CHARS,
 };

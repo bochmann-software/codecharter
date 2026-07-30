@@ -99,10 +99,15 @@ The step posts the same sticky summary as the analysis mode, listing every
 uncovered region with its file, line range and containing method. Analysis and
 coverage are separate steps (or jobs), so each keeps its own comment and check.
 
-When the CLI reports per-project test counts (v1.4.5 and newer), the summary
-also carries a compact `Tests | Passed | Failed | Skipped` table with the totals
-summed over all test projects. Older CLIs report no counts, and then the table
-is simply left out.
+The summary also carries a test table with one row per test project — the
+project name, whether it passed, and (with CLI v1.4.5 and newer)
+`Tests | Passed | Failed | Skipped`. Failing projects are listed first, with the
+reason the CLI gave, for example `timed out after 1800s`. Older CLIs report no
+counts, so those rows show em-dashes instead of numbers. The last row is always
+the total summed over the projects that reported counts. On a repository with
+very many test projects the table shrinks to fit GitHub's comment size limit:
+first the passing rows drop (noting how many were left out), and if that is
+still not enough only the totals row remains.
 
 Exit codes map onto the step result: coverage below the minimum fails unless
 `fail-on-threshold: false`, while failing tests, incomplete or missing coverage

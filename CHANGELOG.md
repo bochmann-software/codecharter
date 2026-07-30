@@ -7,6 +7,17 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Changed
+
+- The coverage summary now lists the test projects individually: one row per
+  project with its result and, when the CLI reports them, its test counts.
+  Failing projects come first and carry the reason the CLI gave (for example
+  `timed out after 1800s`); projects from a CLI without counts show em-dashes.
+  A totals row summing the projects that report counts always closes the table.
+  On a repository with very many test projects the table degrades to stay within
+  GitHub's comment and check-summary size limits: first the passing rows are
+  dropped (stating how many), then, if needed, only the totals row is kept.
+
 ### Added
 
 - New opt-in `badge` input. With `badge: true` the run attaches its aggregate

@@ -70087,6 +70087,11 @@ var github = { ...github_exports };
 
 // src/index.js
 var MAX_COMMENT_ROWS = 100;
+var MAX_COMMENT_CHARS = 6e4;
+var EM_DASH = "\u2014";
+function escapeCell(value) {
+  return String(value ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
 function commentMarker(discriminator) {
   const tag = crypto5.createHash("sha1").update(discriminator || "default").digest("hex").slice(0, 12);
   return `<!-- codecharter-analysis:${tag} -->`;
@@ -70426,7 +70431,7 @@ function buildComment(report, counts, workspace, opts) {
         truncated = true;
         break;
       }
-      const rule = (v.ruleName || "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+      const rule = escapeCell(v.ruleName);
       lines.push(`| ${severityBadge(v.severity)} | ${rule} | ${locationLink(v, workspace, repoFull, sha)} |`);
       rendered++;
     }
@@ -70473,14 +70478,54 @@ function testCountsFor(projects) {
   }
   return any ? totals : null;
 }
-function testCountRows(counts) {
-  if (!counts) return [];
-  return [
-    "| Tests | Passed | Failed | Skipped |",
-    "|-------|--------|--------|---------|",
-    `| ${counts.total} | ${counts.passed} | ${counts.failed} | ${counts.skipped} |`,
-    ""
-  ];
+var TEST_TABLE_HEADER = [
+  "| Project | Result | Tests | Passed | Failed | Skipped |",
+  "|---------|--------|-------|--------|--------|---------|"
+];
+var COUNT_FIELDS = ["total", "passed", "failed", "skipped"];
+function projectFailed(project) {
+  if (typeof project.succeeded === "boolean") return !project.succeeded;
+  return Number.isFinite(project.exitCode) && project.exitCode !== 0;
+}
+function projectResultCell(project) {
+  if (!projectFailed(project)) return "\u2705";
+  const reason = typeof project.failureReason === "string" ? project.failureReason.trim() : "";
+  const fallback = Number.isFinite(project.exitCode) && project.exitCode !== 0 ? `exit code ${project.exitCode}` : "";
+  const detail = reason || fallback;
+  return detail ? `\u274C ${escapeCell(detail)}` : "\u274C";
+}
+function projectRow(project) {
+  const cells = COUNT_FIELDS.map((f) => Number.isFinite(project[f]) ? project[f] : EM_DASH);
+  return `| ${escapeCell(project.project || "(unknown)")} | ${projectResultCell(project)} | ${cells.join(" | ")} |`;
+}
+function sortTestProjects(projects) {
+  return [...projects].sort((a, b) => {
+    const failedA = projectFailed(a);
+    if (failedA !== projectFailed(b)) return failedA ? -1 : 1;
+    return String(a.project || "").localeCompare(String(b.project || ""));
+  });
+}
+function testTotalsRow(projects, counts) {
+  const label = `**\u03A3 ${projects.length} project${projects.length === 1 ? "" : "s"}**`;
+  const icon = projects.some(projectFailed) ? "\u274C" : "\u2705";
+  const cells = counts ? COUNT_FIELDS.map((f) => `**${counts[f]}**`) : COUNT_FIELDS.map(() => EM_DASH);
+  return `| ${label} | ${icon} | ${cells.join(" | ")} |`;
+}
+function testTableRows(projects, counts, mode = "full") {
+  const list = (projects || []).filter((p) => p && typeof p === "object");
+  if (list.length === 0) return [];
+  const rows = [...TEST_TABLE_HEADER];
+  const notes = [];
+  if (mode !== "totals") {
+    const sorted = sortTestProjects(list);
+    const shown = mode === "failing" ? sorted.filter(projectFailed) : sorted;
+    for (const project of shown) rows.push(projectRow(project));
+    const omitted = sorted.length - shown.length;
+    if (omitted > 0)
+      notes.push("", `_\u2026 ${omitted} passing project(s) omitted to keep this report within GitHub's size limit._`);
+  }
+  rows.push(testTotalsRow(list, counts));
+  return [...rows, ...notes, ""];
 }
 function floorPercent(percent) {
   return Math.floor(Number((percent * 100).toFixed(6))) / 100;
@@ -70516,7 +70561,16 @@ function analysisBadgePayload(counts) {
     findings: { errors: counts.error, warnings: counts.warn, infos: counts.info }
   });
 }
+var TEST_TABLE_MODES = ["full", "failing", "totals"];
 function buildCoverageComment(summary2, workspace, opts) {
+  let markdown = "";
+  for (const mode of TEST_TABLE_MODES) {
+    markdown = renderCoverageComment(summary2, workspace, opts, mode);
+    if (markdown.length <= MAX_COMMENT_CHARS) break;
+  }
+  return markdown;
+}
+function renderCoverageComment(summary2, workspace, opts, tableMode) {
   const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
   const lines = [heading, ""];
@@ -70536,7 +70590,7 @@ function buildCoverageComment(summary2, workspace, opts) {
     `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`).`,
     ""
   );
-  lines.push(...testCountRows(summary2.testCounts));
+  lines.push(...testTableRows(summary2.projects, summary2.testCounts, tableMode));
   const byFile = /* @__PURE__ */ new Map();
   for (const region of summary2.regions) {
     const key = displayPath(region.relativeFile || region.file, workspace);
@@ -70563,7 +70617,7 @@ function buildCoverageComment(summary2, workspace, opts) {
       const first = numbers[0];
       const last = numbers[numbers.length - 1];
       const span = numbers.length > 1 ? `${first}-${last}` : `${first ?? "?"}`;
-      const method = (region.method || "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+      const method = escapeCell(region.method);
       const link = repoFull && sha && first ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})` : `${file}:${first ?? "?"}`;
       lines.push(`| ${span} | ${method} | ${link} |`);
       rendered++;
@@ -71101,6 +71155,7 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   run().catch((err) => core.setFailed(err instanceof Error ? err.message : String(err)));
 }
 export {
+  MAX_COMMENT_CHARS,
   MAX_COMMENT_ROWS,
   PLATFORMS,
   analysisBadgePayload,
@@ -71128,6 +71183,8 @@ export {
   locationLink,
   minSeverityColor,
   obtainCli,
+  projectFailed,
+  projectResultCell,
   publishViaPortal,
   readJson,
   resolveDiffArgs,
@@ -71137,9 +71194,10 @@ export {
   severityBadge,
   severityLabel,
   severityRank,
+  sortTestProjects,
   tally,
-  testCountRows,
   testCountsFor,
+  testTableRows,
   titleFor,
   upsertComment,
   verifySha,
