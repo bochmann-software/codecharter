@@ -526,6 +526,95 @@ function coverageSummary(report) {
 }
 
 /**
+ * Sums the per-project test counts a coverage report carries (CLI >= v1.4.5).
+ * Projects that report no counts at all — every report written by an older CLI,
+ * and a project whose test run produced no parsable counts — are skipped, so
+ * mixed reports still sum the projects that do have numbers. Returns null only
+ * when no project reported anything, which the callers render as "unknown"
+ * rather than as zero tests.
+ */
+function testCountsFor(projects) {
+  const fields = ['total', 'passed', 'failed', 'skipped'];
+  const totals = { total: 0, passed: 0, failed: 0, skipped: 0 };
+  let any = false;
+  for (const project of projects || []) {
+    if (!project || typeof project !== 'object') continue;
+    const numbers = fields.filter((f) => Number.isFinite(project[f]));
+    if (numbers.length === 0) continue;
+    any = true;
+    for (const field of numbers) totals[field] += project[field];
+  }
+  return any ? totals : null;
+}
+
+/**
+ * Renders the aggregate test counts as a compact table for the sticky comment.
+ * Returns an empty array when the report carries no counts, so a report from an
+ * older CLI simply omits the table instead of showing zeros.
+ */
+function testCountRows(counts) {
+  if (!counts) return [];
+  return [
+    '| Tests | Passed | Failed | Skipped |',
+    '|-------|--------|--------|---------|',
+    `| ${counts.total} | ${counts.passed} | ${counts.failed} | ${counts.skipped} |`,
+    '',
+  ];
+}
+
+/**
+ * Rounds a percentage down to two decimals, matching the number the badge shows.
+ * Flooring (not rounding) is deliberate: 99.999% must never be advertised as
+ * 100%. The intermediate `toFixed` absorbs binary-float error so a clean value
+ * like 98.33 does not floor to 98.32.
+ */
+function floorPercent(percent) {
+  return Math.floor(Number((percent * 100).toFixed(6))) / 100;
+}
+
+/**
+ * Builds the opt-in `badge` object attached to the portal check payload. It
+ * carries only aggregate numbers plus the branch they belong to, so the portal
+ * can serve repository badges without storing anything else. Fields the calling
+ * mode does not know stay null.
+ */
+function buildBadgePayload({ coverage = null, findings = null, testCounts = null } = {}) {
+  const branch = process.env.GITHUB_REF_NAME || '';
+  const defaultBranch = github.context.payload?.repository?.default_branch || '';
+  return {
+    branch,
+    isDefaultBranch: branch !== '' && defaultBranch !== '' && branch === defaultBranch,
+    coverage,
+    findings,
+    testCounts,
+  };
+}
+
+/** The badge payload for a coverage run; coverage stays null without data. */
+function coverageBadgePayload(summary) {
+  return buildBadgePayload({
+    coverage:
+      summary.percent === null
+        ? null
+        : {
+            percent: floorPercent(summary.percent),
+            requiredPercent: summary.required,
+            met: summary.met,
+            coveredLines: summary.covered,
+            measurableLines: summary.total,
+          },
+    testCounts: testCountsFor(summary.projects),
+  });
+}
+
+/** The badge payload for an analysis run: finding counts by severity. */
+function analysisBadgePayload(counts) {
+  return buildBadgePayload({
+    findings: { errors: counts.error, warnings: counts.warn, infos: counts.info },
+  });
+}
+
+/**
  * Builds the Markdown report for a coverage run: a badge line, the uncovered
  * regions grouped by file with linked locations, and a footer stating the gate
  * verdict. Mirrors the shape of the analysis comment so both read alike.
@@ -552,6 +641,7 @@ function buildCoverageComment(summary, workspace, opts) {
     `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`).`,
     ''
   );
+  lines.push(...testCountRows(testCountsFor(summary.projects)));
 
   const byFile = new Map();
   for (const region of summary.regions) {
@@ -917,7 +1007,7 @@ async function runCoverage(ctx) {
   });
   await writeSummary(markdown);
 
-  const published = await publishViaPortal(portal, apiKey, {
+  const payload = {
     repository: repoFull,
     headSha: sha,
     pullNumber: github.context.payload.pull_request?.number ?? null,
@@ -928,7 +1018,11 @@ async function runCoverage(ctx) {
     annotations: [],
     comment: options.wantComment,
     commentKey: discriminator,
-  });
+  };
+  // Opt-in only: without `badge: true` the property is absent entirely, so the
+  // portal receives no numbers to store.
+  if (options.badge) payload.badge = coverageBadgePayload(summary);
+  const published = await publishViaPortal(portal, apiKey, payload);
   if (!published && options.wantComment) {
     await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
   }
@@ -994,6 +1088,7 @@ async function run() {
   const diffInput = core.getInput('diff');
   const baselineInput = core.getInput('baseline');
   const wantTelemetry = (core.getInput('telemetry') || 'false').toLowerCase() === 'true';
+  const wantBadge = (core.getInput('badge') || 'false').toLowerCase() === 'true';
 
   const isWindows = process.platform === 'win32';
   const platform = resolvePlatform();
@@ -1073,6 +1168,7 @@ async function run() {
           resultsRoot: core.getInput('results-root'),
           failOnThreshold: (core.getInput('fail-on-threshold') || 'true').toLowerCase() !== 'false',
           reportOutput: core.getInput('coverage-report'),
+          badge: wantBadge,
           wantComment,
           commentKey,
           githubToken,
@@ -1225,7 +1321,7 @@ async function run() {
       // needed. Fall back to the workflow-token comment when the App is not
       // installed/linked or the portal is unavailable, so repos without the App
       // keep working unchanged.
-      const published = await publishViaPortal(portal, apiKey, {
+      const payload = {
         repository: repoFull,
         headSha: sha,
         pullNumber: github.context.payload.pull_request?.number ?? null,
@@ -1236,7 +1332,10 @@ async function run() {
         annotations: [],
         comment: wantComment,
         commentKey: discriminator,
-      });
+      };
+      // Opt-in only: see the coverage path above.
+      if (wantBadge) payload.badge = analysisBadgePayload(counts);
+      const published = await publishViaPortal(portal, apiKey, payload);
 
       if (!published && wantComment) {
         await upsertComment(githubToken, commentMarker(discriminator), markdown);
@@ -1343,6 +1442,12 @@ export {
   run,
   runCoverage,
   coverageSummary,
+  testCountsFor,
+  testCountRows,
+  floorPercent,
+  buildBadgePayload,
+  coverageBadgePayload,
+  analysisBadgePayload,
   buildCoverageComment,
   coverageFooterLine,
   coverageConclusion,

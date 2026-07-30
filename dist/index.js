@@ -70457,6 +70457,59 @@ function coverageSummary(report) {
     projects: report && report.testResults || []
   };
 }
+function testCountsFor(projects) {
+  const fields = ["total", "passed", "failed", "skipped"];
+  const totals = { total: 0, passed: 0, failed: 0, skipped: 0 };
+  let any = false;
+  for (const project of projects || []) {
+    if (!project || typeof project !== "object") continue;
+    const numbers = fields.filter((f) => Number.isFinite(project[f]));
+    if (numbers.length === 0) continue;
+    any = true;
+    for (const field of numbers) totals[field] += project[field];
+  }
+  return any ? totals : null;
+}
+function testCountRows(counts) {
+  if (!counts) return [];
+  return [
+    "| Tests | Passed | Failed | Skipped |",
+    "|-------|--------|--------|---------|",
+    `| ${counts.total} | ${counts.passed} | ${counts.failed} | ${counts.skipped} |`,
+    ""
+  ];
+}
+function floorPercent(percent) {
+  return Math.floor(Number((percent * 100).toFixed(6))) / 100;
+}
+function buildBadgePayload({ coverage = null, findings = null, testCounts = null } = {}) {
+  const branch = process.env.GITHUB_REF_NAME || "";
+  const defaultBranch = github.context.payload?.repository?.default_branch || "";
+  return {
+    branch,
+    isDefaultBranch: branch !== "" && defaultBranch !== "" && branch === defaultBranch,
+    coverage,
+    findings,
+    testCounts
+  };
+}
+function coverageBadgePayload(summary2) {
+  return buildBadgePayload({
+    coverage: summary2.percent === null ? null : {
+      percent: floorPercent(summary2.percent),
+      requiredPercent: summary2.required,
+      met: summary2.met,
+      coveredLines: summary2.covered,
+      measurableLines: summary2.total
+    },
+    testCounts: testCountsFor(summary2.projects)
+  });
+}
+function analysisBadgePayload(counts) {
+  return buildBadgePayload({
+    findings: { errors: counts.error, warnings: counts.warn, infos: counts.info }
+  });
+}
 function buildCoverageComment(summary2, workspace, opts) {
   const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
@@ -70477,6 +70530,7 @@ function buildCoverageComment(summary2, workspace, opts) {
     `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`).`,
     ""
   );
+  lines.push(...testCountRows(testCountsFor(summary2.projects)));
   const byFile = /* @__PURE__ */ new Map();
   for (const region of summary2.regions) {
     const key = displayPath(region.relativeFile || region.file, workspace);
@@ -70739,7 +70793,7 @@ async function runCoverage(ctx) {
     exitCode: code
   });
   await writeSummary(markdown);
-  const published = await publishViaPortal(portal, apiKey, {
+  const payload = {
     repository: repoFull,
     headSha: sha,
     pullNumber: github.context.payload.pull_request?.number ?? null,
@@ -70750,7 +70804,9 @@ async function runCoverage(ctx) {
     annotations: [],
     comment: options.wantComment,
     commentKey: discriminator
-  });
+  };
+  if (options.badge) payload.badge = coverageBadgePayload(summary2);
+  const published = await publishViaPortal(portal, apiKey, payload);
   if (!published && options.wantComment) {
     await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
   }
@@ -70805,6 +70861,7 @@ async function run() {
   const diffInput = core.getInput("diff");
   const baselineInput = core.getInput("baseline");
   const wantTelemetry = (core.getInput("telemetry") || "false").toLowerCase() === "true";
+  const wantBadge = (core.getInput("badge") || "false").toLowerCase() === "true";
   const isWindows2 = process.platform === "win32";
   const platform3 = resolvePlatform();
   const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
@@ -70863,6 +70920,7 @@ async function run() {
           resultsRoot: core.getInput("results-root"),
           failOnThreshold: (core.getInput("fail-on-threshold") || "true").toLowerCase() !== "false",
           reportOutput: core.getInput("coverage-report"),
+          badge: wantBadge,
           wantComment,
           commentKey,
           githubToken
@@ -70954,7 +71012,7 @@ async function run() {
         failOn
       });
       await writeSummary(markdown);
-      const published = await publishViaPortal(portal, apiKey, {
+      const payload = {
         repository: repoFull,
         headSha: sha,
         pullNumber: github.context.payload.pull_request?.number ?? null,
@@ -70965,7 +71023,9 @@ async function run() {
         annotations: [],
         comment: wantComment,
         commentKey: discriminator
-      });
+      };
+      if (wantBadge) payload.badge = analysisBadgePayload(counts);
+      const published = await publishViaPortal(portal, apiKey, payload);
       if (!published && wantComment) {
         await upsertComment(githubToken, commentMarker(discriminator), markdown);
       }
@@ -71025,10 +71085,13 @@ if (isMainModule(import.meta.url, process.argv[1])) {
 export {
   MAX_COMMENT_ROWS,
   PLATFORMS,
+  analysisBadgePayload,
+  buildBadgePayload,
   buildComment,
   buildCoverageComment,
   commentMarker,
   conclusionFor,
+  coverageBadgePayload,
   coverageConclusion,
   coverageFooterLine,
   coverageSummary,
@@ -71040,6 +71103,7 @@ export {
   failOnColor,
   fetchManifest,
   findExecutable,
+  floorPercent,
   footerLine,
   hasConfiguredProfiles,
   isMainModule,
@@ -71056,6 +71120,8 @@ export {
   severityLabel,
   severityRank,
   tally,
+  testCountRows,
+  testCountsFor,
   titleFor,
   upsertComment,
   verifySha,
