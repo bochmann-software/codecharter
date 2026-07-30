@@ -14,9 +14,15 @@ the latest release in its line.
   counts, and the branch they were measured on — to the check report the action
   already posts to the portal, so the portal can serve repository badges.
   Nothing is attached without it. Valid in both `analyze` and `coverage` mode.
-- The coverage summary now shows a `Tests | Passed | Failed | Skipped` table
-  with the counts summed over the test projects that report them (CLI v1.4.5 and
-  newer). Reports from older CLIs carry no counts and omit the table.
+- The coverage summary now carries a test table with one row per test project:
+  its name, whether it passed, and its `Tests | Passed | Failed | Skipped`
+  counts (CLI v1.4.5 and newer; older CLIs report no counts, so those rows show
+  em-dashes). Failing projects are listed first with the reason the CLI gave,
+  for example `timed out after 1800s`, and a totals row summing the projects
+  that report counts always closes the table. On a repository with very many
+  test projects the table degrades to stay within GitHub's comment and
+  check-summary size limits: first the passing rows are dropped (stating how
+  many), then, if needed, only the totals row is kept.
 
 ## [1.8.0] - 2026-07-28
 

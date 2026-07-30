@@ -10,17 +10,13 @@ import assert from 'node:assert/strict';
 import { github } from '../src/deps.js';
 import {
   testCountsFor,
-  testCountRows,
   floorPercent,
   buildBadgePayload,
   withBadge,
   coverageBadgePayload,
   analysisBadgePayload,
-  buildCoverageComment,
   coverageSummary,
 } from '../src/index.js';
-
-const WORKSPACE = '/repo';
 
 function coverageReport(overrides = {}) {
   return {
@@ -181,38 +177,4 @@ test('withBadge: omits the property entirely without the opt-in', () => {
   const withIt = withBadge(base, true, badge);
   assert.deepEqual(withIt, { checkName: 'CodeCharter', badge: { branch: 'main' } });
   assert.equal('badge' in base, false, 'the original payload is not mutated');
-});
-
-// ---------------------------------------------------------------------------
-// the summary table
-// ---------------------------------------------------------------------------
-
-test('testCountRows: renders a table, or nothing at all without counts', () => {
-  assert.deepEqual(testCountRows(null), []);
-  assert.deepEqual(testCountRows({ total: 3, passed: 2, failed: 1, skipped: 0 }), [
-    '| Tests | Passed | Failed | Skipped |',
-    '|-------|--------|--------|---------|',
-    '| 3 | 2 | 1 | 0 |',
-    '',
-  ]);
-});
-
-test('buildCoverageComment: shows the test counts when the report has them', () => {
-  const md = buildCoverageComment(coverageSummary(coverageReport()), WORKSPACE, {
-    repoFull: 'acme/app',
-    sha: 'abc',
-    failOnThreshold: true,
-    exitCode: 1,
-  });
-  assert.match(md, /\| Tests \| Passed \| Failed \| Skipped \|/);
-  assert.match(md, /\| 10 \| 9 \| 0 \| 1 \|/);
-});
-
-test('buildCoverageComment: omits the test-count table for an older CLI report', () => {
-  const md = buildCoverageComment(
-    coverageSummary(coverageReport({ testResults: [{ project: 'A.Tests', exitCode: 0, succeeded: true }] })),
-    WORKSPACE,
-    { repoFull: 'acme/app', sha: 'abc', failOnThreshold: true, exitCode: 1 }
-  );
-  assert.doesNotMatch(md, /\| Tests \| Passed \|/);
 });

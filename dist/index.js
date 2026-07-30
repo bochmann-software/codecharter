@@ -70087,6 +70087,11 @@ var github = { ...github_exports };
 
 // src/index.js
 var MAX_COMMENT_ROWS = 100;
+var MAX_COMMENT_CHARS = 6e4;
+var EM_DASH = "\u2014";
+function escapeCell(value) {
+  return String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
 function commentMarker(discriminator) {
   const tag = crypto5.createHash("sha1").update(discriminator || "default").digest("hex").slice(0, 12);
   return `<!-- codecharter-analysis:${tag} -->`;
@@ -70426,7 +70431,7 @@ function buildComment(report, counts, workspace, opts) {
         truncated = true;
         break;
       }
-      const rule = (v.ruleName || "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+      const rule = escapeCell(v.ruleName);
       lines.push(`| ${severityBadge(v.severity)} | ${rule} | ${locationLink(v, workspace, repoFull, sha)} |`);
       rendered++;
     }
@@ -70460,27 +70465,62 @@ function coverageSummary(report) {
     testCounts: testCountsFor(report && report.testResults)
   };
 }
+var COUNT_FIELDS = ["total", "passed", "failed", "skipped"];
 function testCountsFor(projects) {
-  const fields = ["total", "passed", "failed", "skipped"];
   const totals = { total: 0, passed: 0, failed: 0, skipped: 0 };
   let any = false;
   for (const project of projects || []) {
     if (!project || typeof project !== "object") continue;
-    const numbers = fields.filter((f) => Number.isFinite(project[f]));
+    const numbers = COUNT_FIELDS.filter((f) => Number.isFinite(project[f]));
     if (numbers.length === 0) continue;
     any = true;
     for (const field of numbers) totals[field] += project[field];
   }
   return any ? totals : null;
 }
-function testCountRows(counts) {
-  if (!counts) return [];
-  return [
-    "| Tests | Passed | Failed | Skipped |",
-    "|-------|--------|--------|---------|",
-    `| ${counts.total} | ${counts.passed} | ${counts.failed} | ${counts.skipped} |`,
-    ""
-  ];
+var TEST_TABLE_HEADER = [
+  "| Project | Result | Tests | Passed | Failed | Skipped |",
+  "|---------|--------|-------|--------|--------|---------|"
+];
+function projectFailed(project) {
+  if (typeof project.succeeded === "boolean") return !project.succeeded;
+  return Number.isFinite(project.exitCode) && project.exitCode !== 0;
+}
+function projectResultCell(project) {
+  if (!projectFailed(project)) return "\u2705";
+  const reason = typeof project.failureReason === "string" ? project.failureReason.trim() : "";
+  const fallback = Number.isFinite(project.exitCode) && project.exitCode !== 0 ? `exit code ${project.exitCode}` : "";
+  const detail = reason || fallback;
+  return detail ? `\u274C ${escapeCell(detail)}` : "\u274C";
+}
+function projectRow(project) {
+  const cells = COUNT_FIELDS.map((f) => Number.isFinite(project[f]) ? project[f] : EM_DASH);
+  return `| ${escapeCell(project.project || "(unknown)")} | ${projectResultCell(project)} | ${cells.join(" | ")} |`;
+}
+function sortTestProjects(projects) {
+  return projects.map((project) => ({ project, failed: projectFailed(project), name: String(project.project || "") })).sort((a, b) => a.failed === b.failed ? a.name.localeCompare(b.name) : a.failed ? -1 : 1).map((entry) => entry.project);
+}
+function testTotalsRow(projects, counts) {
+  const label = `**\u03A3 ${projects.length} project${projects.length === 1 ? "" : "s"}**`;
+  const icon = projects.some(projectFailed) ? "\u274C" : "\u2705";
+  const cells = counts ? COUNT_FIELDS.map((f) => `**${counts[f]}**`) : COUNT_FIELDS.map(() => EM_DASH);
+  return `| ${label} | ${icon} | ${cells.join(" | ")} |`;
+}
+function testTableRows(projects, counts, mode = "full") {
+  const list = (projects || []).filter((p) => p && typeof p === "object");
+  if (list.length === 0) return [];
+  const rows = [...TEST_TABLE_HEADER];
+  const notes = [];
+  if (mode !== "totals") {
+    const sorted = sortTestProjects(list);
+    const shown = mode === "failing" ? sorted.filter(projectFailed) : sorted;
+    for (const project of shown) rows.push(projectRow(project));
+    const omitted = sorted.length - shown.length;
+    if (omitted > 0)
+      notes.push("", `_\u2026 ${omitted} passing project(s) omitted to keep this report within GitHub's size limit._`);
+  }
+  rows.push(testTotalsRow(list, counts));
+  return [...rows, ...notes, ""];
 }
 function floorPercent(percent) {
   return Math.floor(Number((percent * 100).toFixed(6))) / 100;
@@ -70516,15 +70556,31 @@ function analysisBadgePayload(counts) {
     findings: { errors: counts.error, warnings: counts.warn, infos: counts.info }
   });
 }
+var TEST_TABLE_MODES = ["full", "failing", "totals"];
 function buildCoverageComment(summary2, workspace, opts) {
-  const { repoFull, sha, titleSuffix, failOnThreshold, exitCode } = opts;
+  const { titleSuffix, exitCode } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
-  const lines = [heading, ""];
   if (exitCode === 3 || summary2.percent === null) {
-    lines.push("![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)", "");
-    lines.push("---", "_No coverage data was produced, so the gate could not be evaluated._");
-    return lines.join("\n");
+    return [
+      heading,
+      "",
+      "![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)",
+      "",
+      "---",
+      "_No coverage data was produced, so the gate could not be evaluated._"
+    ].join("\n");
   }
+  const head = coverageHeadLines(summary2, heading);
+  const tail = coverageRegionLines(summary2, workspace, opts);
+  let markdown = "";
+  for (const mode of TEST_TABLE_MODES) {
+    markdown = [...head, ...testTableRows(summary2.projects, summary2.testCounts, mode), ...tail].join("\n");
+    if (markdown.length <= MAX_COMMENT_CHARS) break;
+  }
+  return markdown;
+}
+function coverageHeadLines(summary2, heading) {
+  const lines = [heading, ""];
   const shown = summary2.percent.toFixed(2);
   const color = summary2.met ? "brightgreen" : "red";
   let badges = `![coverage](https://img.shields.io/badge/coverage-${encodeURIComponent(`${shown}%`)}-${color}?style=flat-square)`;
@@ -70536,7 +70592,11 @@ function buildCoverageComment(summary2, workspace, opts) {
     `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`).`,
     ""
   );
-  lines.push(...testCountRows(summary2.testCounts));
+  return lines;
+}
+function coverageRegionLines(summary2, workspace, opts) {
+  const { repoFull, sha, failOnThreshold } = opts;
+  const lines = [];
   const byFile = /* @__PURE__ */ new Map();
   for (const region of summary2.regions) {
     const key = displayPath(region.relativeFile || region.file, workspace);
@@ -70563,7 +70623,7 @@ function buildCoverageComment(summary2, workspace, opts) {
       const first = numbers[0];
       const last = numbers[numbers.length - 1];
       const span = numbers.length > 1 ? `${first}-${last}` : `${first ?? "?"}`;
-      const method = (region.method || "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+      const method = escapeCell(region.method);
       const link = repoFull && sha && first ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})` : `${file}:${first ?? "?"}`;
       lines.push(`| ${span} | ${method} | ${link} |`);
       rendered++;
@@ -70575,7 +70635,7 @@ function buildCoverageComment(summary2, workspace, opts) {
   }
   lines.push("---");
   lines.push(coverageFooterLine(summary2, failOnThreshold));
-  return lines.join("\n");
+  return lines;
 }
 function coverageFooterLine(summary2, failOnThreshold) {
   if (summary2.met) return "_Coverage meets the required minimum._";
@@ -71101,6 +71161,7 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   run().catch((err) => core.setFailed(err instanceof Error ? err.message : String(err)));
 }
 export {
+  MAX_COMMENT_CHARS,
   MAX_COMMENT_ROWS,
   PLATFORMS,
   analysisBadgePayload,
@@ -71128,6 +71189,8 @@ export {
   locationLink,
   minSeverityColor,
   obtainCli,
+  projectFailed,
+  projectResultCell,
   publishViaPortal,
   readJson,
   resolveDiffArgs,
@@ -71137,9 +71200,10 @@ export {
   severityBadge,
   severityLabel,
   severityRank,
+  sortTestProjects,
   tally,
-  testCountRows,
   testCountsFor,
+  testTableRows,
   titleFor,
   upsertComment,
   verifySha,
