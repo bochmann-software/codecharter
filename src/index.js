@@ -522,6 +522,9 @@ function coverageSummary(report) {
     met: s.hasMetThreshold === true,
     regions: (report && report.uncoveredRegions) || [],
     projects: (report && report.testResults) || [],
+    // Summed once here so the comment and the badge payload read the same
+    // numbers without walking the projects twice.
+    testCounts: testCountsFor(report && report.testResults),
   };
 }
 
@@ -590,6 +593,15 @@ function buildBadgePayload({ coverage = null, findings = null, testCounts = null
   };
 }
 
+/**
+ * Attaches the opt-in badge object to a check payload. Without the opt-in the
+ * property is absent entirely (not null), so a run that did not ask for badges
+ * sends the portal no numbers to store.
+ */
+function withBadge(payload, wantBadge, badge) {
+  return wantBadge ? { ...payload, badge: badge() } : payload;
+}
+
 /** The badge payload for a coverage run; coverage stays null without data. */
 function coverageBadgePayload(summary) {
   return buildBadgePayload({
@@ -603,7 +615,7 @@ function coverageBadgePayload(summary) {
             coveredLines: summary.covered,
             measurableLines: summary.total,
           },
-    testCounts: testCountsFor(summary.projects),
+    testCounts: summary.testCounts,
   });
 }
 
@@ -641,7 +653,7 @@ function buildCoverageComment(summary, workspace, opts) {
     `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`).`,
     ''
   );
-  lines.push(...testCountRows(testCountsFor(summary.projects)));
+  lines.push(...testCountRows(summary.testCounts));
 
   const byFile = new Map();
   for (const region of summary.regions) {
@@ -1007,22 +1019,26 @@ async function runCoverage(ctx) {
   });
   await writeSummary(markdown);
 
-  const payload = {
-    repository: repoFull,
-    headSha: sha,
-    pullNumber: github.context.payload.pull_request?.number ?? null,
-    checkName: titleSuffix ? `CodeCharter Coverage / ${titleSuffix}` : 'CodeCharter Coverage',
-    conclusion: coverageConclusion(code, options.failOnThreshold),
-    title: coverageTitle(code, summary),
-    summary: markdown,
-    annotations: [],
-    comment: options.wantComment,
-    commentKey: discriminator,
-  };
-  // Opt-in only: without `badge: true` the property is absent entirely, so the
-  // portal receives no numbers to store.
-  if (options.badge) payload.badge = coverageBadgePayload(summary);
-  const published = await publishViaPortal(portal, apiKey, payload);
+  const published = await publishViaPortal(
+    portal,
+    apiKey,
+    withBadge(
+      {
+        repository: repoFull,
+        headSha: sha,
+        pullNumber: github.context.payload.pull_request?.number ?? null,
+        checkName: titleSuffix ? `CodeCharter Coverage / ${titleSuffix}` : 'CodeCharter Coverage',
+        conclusion: coverageConclusion(code, options.failOnThreshold),
+        title: coverageTitle(code, summary),
+        summary: markdown,
+        annotations: [],
+        comment: options.wantComment,
+        commentKey: discriminator,
+      },
+      options.badge,
+      () => coverageBadgePayload(summary)
+    )
+  );
   if (!published && options.wantComment) {
     await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
   }
@@ -1321,21 +1337,26 @@ async function run() {
       // needed. Fall back to the workflow-token comment when the App is not
       // installed/linked or the portal is unavailable, so repos without the App
       // keep working unchanged.
-      const payload = {
-        repository: repoFull,
-        headSha: sha,
-        pullNumber: github.context.payload.pull_request?.number ?? null,
-        checkName: titleSuffix ? `CodeCharter / ${titleSuffix}` : 'CodeCharter',
-        conclusion: conclusionFor(failOn, counts),
-        title: titleFor(counts),
-        summary: markdown,
-        annotations: [],
-        comment: wantComment,
-        commentKey: discriminator,
-      };
-      // Opt-in only: see the coverage path above.
-      if (wantBadge) payload.badge = analysisBadgePayload(counts);
-      const published = await publishViaPortal(portal, apiKey, payload);
+      const published = await publishViaPortal(
+        portal,
+        apiKey,
+        withBadge(
+          {
+            repository: repoFull,
+            headSha: sha,
+            pullNumber: github.context.payload.pull_request?.number ?? null,
+            checkName: titleSuffix ? `CodeCharter / ${titleSuffix}` : 'CodeCharter',
+            conclusion: conclusionFor(failOn, counts),
+            title: titleFor(counts),
+            summary: markdown,
+            annotations: [],
+            comment: wantComment,
+            commentKey: discriminator,
+          },
+          wantBadge,
+          () => analysisBadgePayload(counts)
+        )
+      );
 
       if (!published && wantComment) {
         await upsertComment(githubToken, commentMarker(discriminator), markdown);
@@ -1446,6 +1467,7 @@ export {
   testCountRows,
   floorPercent,
   buildBadgePayload,
+  withBadge,
   coverageBadgePayload,
   analysisBadgePayload,
   buildCoverageComment,

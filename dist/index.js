@@ -70454,7 +70454,10 @@ function coverageSummary(report) {
     source: s.minimumRequiredPercentSource || "default",
     met: s.hasMetThreshold === true,
     regions: report && report.uncoveredRegions || [],
-    projects: report && report.testResults || []
+    projects: report && report.testResults || [],
+    // Summed once here so the comment and the badge payload read the same
+    // numbers without walking the projects twice.
+    testCounts: testCountsFor(report && report.testResults)
   };
 }
 function testCountsFor(projects) {
@@ -70493,6 +70496,9 @@ function buildBadgePayload({ coverage = null, findings = null, testCounts = null
     testCounts
   };
 }
+function withBadge(payload, wantBadge, badge) {
+  return wantBadge ? { ...payload, badge: badge() } : payload;
+}
 function coverageBadgePayload(summary2) {
   return buildBadgePayload({
     coverage: summary2.percent === null ? null : {
@@ -70502,7 +70508,7 @@ function coverageBadgePayload(summary2) {
       coveredLines: summary2.covered,
       measurableLines: summary2.total
     },
-    testCounts: testCountsFor(summary2.projects)
+    testCounts: summary2.testCounts
   });
 }
 function analysisBadgePayload(counts) {
@@ -70530,7 +70536,7 @@ function buildCoverageComment(summary2, workspace, opts) {
     `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`).`,
     ""
   );
-  lines.push(...testCountRows(testCountsFor(summary2.projects)));
+  lines.push(...testCountRows(summary2.testCounts));
   const byFile = /* @__PURE__ */ new Map();
   for (const region of summary2.regions) {
     const key = displayPath(region.relativeFile || region.file, workspace);
@@ -70793,20 +70799,26 @@ async function runCoverage(ctx) {
     exitCode: code
   });
   await writeSummary(markdown);
-  const payload = {
-    repository: repoFull,
-    headSha: sha,
-    pullNumber: github.context.payload.pull_request?.number ?? null,
-    checkName: titleSuffix ? `CodeCharter Coverage / ${titleSuffix}` : "CodeCharter Coverage",
-    conclusion: coverageConclusion(code, options.failOnThreshold),
-    title: coverageTitle(code, summary2),
-    summary: markdown,
-    annotations: [],
-    comment: options.wantComment,
-    commentKey: discriminator
-  };
-  if (options.badge) payload.badge = coverageBadgePayload(summary2);
-  const published = await publishViaPortal(portal, apiKey, payload);
+  const published = await publishViaPortal(
+    portal,
+    apiKey,
+    withBadge(
+      {
+        repository: repoFull,
+        headSha: sha,
+        pullNumber: github.context.payload.pull_request?.number ?? null,
+        checkName: titleSuffix ? `CodeCharter Coverage / ${titleSuffix}` : "CodeCharter Coverage",
+        conclusion: coverageConclusion(code, options.failOnThreshold),
+        title: coverageTitle(code, summary2),
+        summary: markdown,
+        annotations: [],
+        comment: options.wantComment,
+        commentKey: discriminator
+      },
+      options.badge,
+      () => coverageBadgePayload(summary2)
+    )
+  );
   if (!published && options.wantComment) {
     await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
   }
@@ -71012,20 +71024,26 @@ async function run() {
         failOn
       });
       await writeSummary(markdown);
-      const payload = {
-        repository: repoFull,
-        headSha: sha,
-        pullNumber: github.context.payload.pull_request?.number ?? null,
-        checkName: titleSuffix ? `CodeCharter / ${titleSuffix}` : "CodeCharter",
-        conclusion: conclusionFor(failOn, counts),
-        title: titleFor(counts),
-        summary: markdown,
-        annotations: [],
-        comment: wantComment,
-        commentKey: discriminator
-      };
-      if (wantBadge) payload.badge = analysisBadgePayload(counts);
-      const published = await publishViaPortal(portal, apiKey, payload);
+      const published = await publishViaPortal(
+        portal,
+        apiKey,
+        withBadge(
+          {
+            repository: repoFull,
+            headSha: sha,
+            pullNumber: github.context.payload.pull_request?.number ?? null,
+            checkName: titleSuffix ? `CodeCharter / ${titleSuffix}` : "CodeCharter",
+            conclusion: conclusionFor(failOn, counts),
+            title: titleFor(counts),
+            summary: markdown,
+            annotations: [],
+            comment: wantComment,
+            commentKey: discriminator
+          },
+          wantBadge,
+          () => analysisBadgePayload(counts)
+        )
+      );
       if (!published && wantComment) {
         await upsertComment(githubToken, commentMarker(discriminator), markdown);
       }
@@ -71125,5 +71143,6 @@ export {
   titleFor,
   upsertComment,
   verifySha,
+  withBadge,
   writeSummary
 };

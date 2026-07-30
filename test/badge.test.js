@@ -18,6 +18,7 @@ import {
   testCountRows,
   floorPercent,
   buildBadgePayload,
+  withBadge,
   coverageBadgePayload,
   analysisBadgePayload,
   buildCoverageComment,
@@ -170,6 +171,23 @@ test('analysisBadgePayload: carries the finding counts by severity', () => {
   assert.deepEqual(badge.findings, { errors: 1, warnings: 2, infos: 3 });
   assert.equal(badge.coverage, null);
   assert.equal(badge.testCounts, null);
+});
+
+test('withBadge: omits the property entirely without the opt-in', () => {
+  const base = { checkName: 'CodeCharter' };
+  let built = 0;
+  const badge = () => {
+    built++;
+    return { branch: 'main' };
+  };
+
+  const without = withBadge(base, false, badge);
+  assert.equal('badge' in without, false, 'the property must be absent, not null');
+  assert.equal(built, 0, 'no numbers are even computed without the opt-in');
+
+  const withIt = withBadge(base, true, badge);
+  assert.deepEqual(withIt, { checkName: 'CodeCharter', badge: { branch: 'main' } });
+  assert.equal('badge' in base, false, 'the original payload is not mutated');
 });
 
 // ---------------------------------------------------------------------------
