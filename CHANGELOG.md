@@ -7,13 +7,20 @@ the latest release in its line.
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-08-04
+
+### Changed
+
+- Dependency maintenance only; no change to inputs, outputs or behavior.
+  Bundled runtime dependency `@actions/cache` 6.1.0 → 6.2.0, so the shipped
+  `dist/` bundle was rebuilt. Workflow actions `actions/checkout` 6 → 7 and
+  `actions/setup-node` 6 → 7 in CI and release. Dev dependencies `eslint`
+  10.7.0 → 10.8.0, `globals` 17.7.0 → 17.8.0 and `prettier` 3.9.5 → 3.9.6.
+
+## [1.9.1] - 2026-07-30
+
 ### Added
 
-- New opt-in `badge` input. With `badge: true` the run attaches its aggregate
-  numbers — coverage percent and line totals, finding counts by severity, test
-  counts, and the branch they were measured on — to the check report the action
-  already posts to the portal, so the portal can serve repository badges.
-  Nothing is attached without it. Valid in both `analyze` and `coverage` mode.
 - The coverage summary now carries a test table with one row per test project:
   its name, whether it passed, and its `Tests | Passed | Failed | Skipped`
   counts (CLI v1.4.5 and newer; older CLIs report no counts, so those rows show
@@ -23,6 +30,16 @@ the latest release in its line.
   test projects the table degrades to stay within GitHub's comment and
   check-summary size limits: first the passing rows are dropped (stating how
   many), then, if needed, only the totals row is kept.
+
+## [1.9.0] - 2026-07-30
+
+### Added
+
+- New opt-in `badge` input. With `badge: true` the run attaches its aggregate
+  numbers — coverage percent and line totals, finding counts by severity, test
+  counts, and the branch they were measured on — to the check report the action
+  already posts to the portal, so the portal can serve repository badges.
+  Nothing is attached without it. Valid in both `analyze` and `coverage` mode.
 
 ## [1.8.0] - 2026-07-28
 
@@ -106,7 +123,11 @@ the latest release in its line.
 See the [GitHub Releases](https://github.com/bochmann-software/codeguard/releases)
 page for the history of the `1.6.x` and earlier lines.
 
-[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.7.3...HEAD
+[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.9.2...HEAD
+[1.9.2]: https://github.com/bochmann-software/codeguard/compare/v1.9.1...v1.9.2
+[1.9.1]: https://github.com/bochmann-software/codeguard/compare/v1.9.0...v1.9.1
+[1.9.0]: https://github.com/bochmann-software/codeguard/compare/v1.8.0...v1.9.0
+[1.8.0]: https://github.com/bochmann-software/codeguard/compare/v1.7.3...v1.8.0
 [1.7.3]: https://github.com/bochmann-software/codeguard/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/bochmann-software/codeguard/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/bochmann-software/codeguard/compare/v1.7.0...v1.7.1
