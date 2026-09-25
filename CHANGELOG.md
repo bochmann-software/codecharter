@@ -28,9 +28,9 @@ the latest release in its line.
   `min-diff-coverage`, and `min-diff-coverage` with `diff` off fail the step
   with a message saying what to change, before the CLI is downloaded. A pull
   request whose merge-base is not in the checkout fails the step before any
-  test runs, asking for `fetch-depth: 0`. Needs a
-  CLI with changed-line coverage (`version: latest` satisfies it). The `badge`
-  payload keeps reporting whole-solution coverage.
+  test runs, asking for `fetch-depth: 0`. Needs a CLI with changed-line
+  coverage (`version: latest` satisfies it). The `badge` payload keeps
+  reporting whole-solution coverage.
 
 ### Changed
 
