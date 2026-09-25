@@ -70310,7 +70310,8 @@ async function resolveEventRange(workspace) {
     const head2 = pr.head?.sha;
     await fetchBestEffort(workspace, base);
     const mb = await gitCapture(["-C", workspace, "merge-base", base, head2]);
-    return { base: mb.code === 0 && mb.out ? mb.out : base, head: head2 };
+    if (mb.code === 0 && mb.out) return { base: mb.out, head: head2 };
+    return { base, head: head2, unconnected: true };
   }
   if (github.context.eventName !== "push") {
     return {
@@ -70445,6 +70446,12 @@ async function resolveCoverageGitRef(diffInput, workspace) {
     core.warning(`\`diff: true\` did not scope this run: ${range2.skipped}. Gating whole-solution coverage instead.`);
     return { gitRef: null, skipped: true };
   }
+  if (range2.unconnected) {
+    core.setFailed(
+      `Cannot gate the pull request's changed lines: the merge base between base ${range2.base} and head ${range2.head} is not in the checkout. Coverage diff mode needs it. What to do: check out with \`fetch-depth: 0\` on actions/checkout.`
+    );
+    return null;
+  }
   return { gitRef: `${range2.base}..${range2.head}`, skipped: false };
 }
 function isPercentInput(value) {
@@ -70454,6 +70461,7 @@ async function resolveCoverageDiffArgs(options, workspace) {
   if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace)) return null;
   const minDiff = (options.minDiffCoverage || "").trim();
   const resolved = await resolveCoverageGitRef(options.diff, workspace);
+  if (resolved === null) return null;
   if (!resolved.gitRef) {
     if (minDiff) core.warning("`min-diff-coverage` is ignored because no diff gate runs on this event.");
     return [];

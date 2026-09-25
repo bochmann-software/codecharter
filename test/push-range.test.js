@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 import { core, exec, github } from '../src/deps.js';
-import { resolveDiffArgs, resolveCoverageGitRef } from '../src/index.js';
+import { resolveDiffArgs, resolveCoverageGitRef, resolveCoverageDiffArgs, runCoverage } from '../src/index.js';
 
 const git = (cwd, ...args) =>
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
@@ -57,6 +57,7 @@ after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 let warnings;
 let calls;
+let cliCalls;
 let saved;
 let tmp;
 
@@ -74,7 +75,12 @@ beforeEach(() => {
   core.warning = (m) => warnings.push(m);
   core.setFailed = (m) => assert.fail(`unexpected failure: ${m}`);
   const real = saved.exec;
+  cliCalls = [];
   exec.exec = (cmd, args, opts) => {
+    if (cmd !== 'git') {
+      cliCalls.push([cmd, ...args]);
+      return 0;
+    }
     calls.push(args);
     return real(cmd, args, opts);
   };
@@ -182,4 +188,57 @@ test('shallow depth 2, push of one commit: before is the merge base, no warning 
     assert.equal(mode.range, `${sha.C}..${sha.D}`);
     assert.deepEqual(mode.warnings, []);
   }
+});
+
+// ---------------------------------------------------------------------------
+// pull requests: base D on main, head F on `forced`, merge-base B
+// ---------------------------------------------------------------------------
+
+function pullRequest() {
+  github.context.eventName = 'pull_request';
+  github.context.payload = { pull_request: { number: 1, base: { sha: sha.D }, head: { sha: sha.F } } };
+}
+
+test('pull request, shallow depth 1: coverage fails before any test run, analyze still diffs the tips', async () => {
+  pullRequest();
+  const failures = [];
+  core.setFailed = (m) => failures.push(m);
+
+  const coverageDir = clone('--depth', '1', '--branch', 'forced');
+  await runCoverage({
+    exe: 'codecharter',
+    env: {},
+    workspace: coverageDir,
+    tmp,
+    portal: 'https://portal.invalid',
+    apiKey: 'KEY',
+    options: { root: '', diff: 'true', minDiffCoverage: '100', failOnThreshold: true, wantComment: false },
+  });
+  assert.deepEqual(failures, [
+    `Cannot gate the pull request's changed lines: the merge base between base ${sha.D} and head ${sha.F} ` +
+      'is not in the checkout. Coverage diff mode needs it. What to do: check out with `fetch-depth: 0` on ' +
+      'actions/checkout.',
+  ]);
+  assert.deepEqual(cliCalls, [], 'the CLI (and with it the test run) never started');
+  assert.deepEqual(fetchCall().slice(2), ['fetch', '--no-tags', '--depth=1', 'origin', sha.D]);
+
+  // Analyze mode keeps its behaviour: the tips are diffed directly.
+  calls = [];
+  const analyzeDir = clone('--depth', '1', '--branch', 'forced');
+  const result = await resolveDiffArgs('true', analyzeDir, tmp);
+  assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
+  assert.deepEqual(calls.at(-1).slice(-2), [sha.D, sha.F]);
+  assert.equal(failures.length, 1, 'analyze mode does not fail');
+});
+
+test('pull request, full history: coverage gates merge-base..head', async () => {
+  pullRequest();
+  const dir = clone('--branch', 'forced');
+  assert.deepEqual(await resolveCoverageDiffArgs({ diff: 'true', minDiffCoverage: '100' }, dir), [
+    '--git-ref',
+    `${sha.B}..${sha.F}`,
+    '--min-diff-coverage',
+    '100',
+  ]);
+  assert.deepEqual(fetchCall().slice(2), ['fetch', '--no-tags', 'origin', sha.D]);
 });

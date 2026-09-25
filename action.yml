@@ -68,7 +68,9 @@ inputs:
           shallow checkout), the pushed commit against its parent (sha~1..sha).
           If that parent is missing too (a root commit, or a depth-1 checkout)
           and on any other event type the run falls back to the whole solution
-          with a warning.
+          with a warning. In coverage mode a pull request whose merge-base is
+          not in the checkout fails the step before any test runs (use
+          fetch-depth: 0); analyze mode then diffs the base tip directly.
         - a git ref range, e.g. 'main..HEAD' or 'origin/main..HEAD'.
         - a path to a unified diff file in the repository (analyze mode only).
       In analyze mode both the reported findings and the fail-on gate apply only

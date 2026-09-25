@@ -279,8 +279,9 @@ const ZERO_SHA = /^0+$/;
  * exactly what the CLI makes of a two-dot range (it diffs from the merge-base),
  * so analyze mode (which diffs on the runner) and coverage mode (which hands the
  * CLI the range) gate the same lines. One exception remains on pull requests:
- * when their merge-base is not reachable, the base tip is used as is, which
- * analyze mode diffs directly while the CLI cannot resolve it.
+ * when their merge-base is not reachable, the base tip is used as is and the
+ * result is marked `unconnected`: analyze mode diffs the tips directly, while
+ * coverage mode fails up front because the CLI cannot resolve that range.
  * Returns `{ base, head }`, or `{ skipped }` with the reason no range exists
  * (the caller warns and falls back to the whole solution).
  */
@@ -291,7 +292,10 @@ async function resolveEventRange(workspace) {
     const head = pr.head?.sha;
     await fetchBestEffort(workspace, base);
     const mb = await gitCapture(['-C', workspace, 'merge-base', base, head]);
-    return { base: mb.code === 0 && mb.out ? mb.out : base, head };
+    if (mb.code === 0 && mb.out) return { base: mb.out, head };
+    // Analyze mode diffs the base tip directly; `unconnected` lets coverage mode
+    // refuse a range the CLI cannot resolve.
+    return { base, head, unconnected: true };
   }
   if (github.context.eventName !== 'push') {
     return {
@@ -481,7 +485,9 @@ function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
 
 /**
  * Resolves a validated coverage-mode `diff` input into the ref range the CLI
- * gates (`--git-ref`):
+ * gates (`--git-ref`), or null after failing the step for a pull request whose
+ * merge-base is not in the checkout (the CLI diffs from the merge-base and
+ * would only end in a usage error after the whole test run):
  *   - '' / 'false'        -> no diff gate: `{ gitRef: null, skipped: false }`.
  *   - 'true'              -> `<base>..<head>` from resolveEventRange; on an event
  *                            without a range it warns and returns
@@ -498,6 +504,14 @@ async function resolveCoverageGitRef(diffInput, workspace) {
   if (range.skipped) {
     core.warning(`\`diff: true\` did not scope this run: ${range.skipped}. Gating whole-solution coverage instead.`);
     return { gitRef: null, skipped: true };
+  }
+  if (range.unconnected) {
+    core.setFailed(
+      `Cannot gate the pull request's changed lines: the merge base between base ${range.base} and head ` +
+        `${range.head} is not in the checkout. Coverage diff mode needs it. What to do: check out with ` +
+        '`fetch-depth: 0` on actions/checkout.'
+    );
+    return null;
   }
   return { gitRef: `${range.base}..${range.head}`, skipped: false };
 }
@@ -521,6 +535,7 @@ async function resolveCoverageDiffArgs(options, workspace) {
   const minDiff = (options.minDiffCoverage || '').trim();
 
   const resolved = await resolveCoverageGitRef(options.diff, workspace);
+  if (resolved === null) return null;
   if (!resolved.gitRef) {
     if (minDiff) core.warning('`min-diff-coverage` is ignored because no diff gate runs on this event.');
     return [];

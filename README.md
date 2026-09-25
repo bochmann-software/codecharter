@@ -155,6 +155,10 @@ lines. `diff` takes `true` or a git ref range here; a diff file is rejected,
 because the CLI computes the changed lines of a range itself. On a push,
 `diff: true` gates the pushed commits; on other events (`workflow_dispatch`,
 `schedule`, ...) it warns and the whole-solution gate runs as without `diff`.
+On a pull request the gate needs the merge-base of base and head in the
+checkout; without it (a shallow checkout) the step fails before any test runs
+and asks for `fetch-depth: 0`, rather than running the tests into a range the
+CLI cannot resolve.
 `fail-on-threshold: false` reports a missed changed-lines minimum without
 failing, exactly as it does for the whole-solution minimum. The `badge` payload
 keeps reporting whole-solution coverage. Requires a CLI with changed-line
@@ -244,7 +248,7 @@ changed-lines gate described above.) The single value is interpreted by content:
 | `diff` value | Behavior |
 |---|---|
 | `false` (default) | Analyze the whole solution. |
-| `true` | On pull requests, diff against the base branch (`merge-base..head`). On pushes, diff from the merge-base of `before` and the pushed commit, so a force push does not count the commits it dropped (this needs `fetch-depth: 0`). A push that creates a branch (`before` empty or all zeros) diffs the pushed commit against its parent; so does, with a warning, a push whose `before` is not in the checkout or has no merge-base with it (rewritten history, or a shallow checkout, where a multi-commit push is then scoped to its last commit). If the parent is missing too (a root commit, or a depth-1 checkout), and on every other event type, the whole solution is analyzed, with a warning that says why. |
+| `true` | On pull requests, diff against the base branch (`merge-base..head`). On pushes, diff from the merge-base of `before` and the pushed commit, so a force push does not count the commits it dropped (this needs `fetch-depth: 0`). A push that creates a branch (`before` empty or all zeros) diffs the pushed commit against its parent; so does, with a warning, a push whose `before` is not in the checkout or has no merge-base with it (rewritten history, or a shallow checkout, where a multi-commit push is then scoped to its last commit). If the parent is missing too (a root commit, or a depth-1 checkout), and on every other event type, the whole solution is analyzed, with a warning that says why. On a pull request whose merge-base is not in the checkout, analyze mode diffs the base tip directly, while coverage mode fails the step (see above). |
 | a git ref range, e.g. `main..HEAD` | Diff that range. |
 | a path to a unified diff file | Use that diff as-is. |
 
