@@ -44,7 +44,7 @@ the latest release in its line.
   that creates a branch (`before` empty or all zeros), and with a warning when
   `before` is not a commit in the checkout or has no merge-base with the
   pushed commit (rewritten history the checkout cannot connect, or a shallow
-  checkout; with the default `fetch-depth: 1` a multi-commit push is thus
+  checkout; with `fetch-depth: 2` or more a multi-commit push is thus
   gated on its last commit only). Tips are never compared directly. If the
   parent is not in the checkout either (a root commit, or a depth-1 checkout),
   the run falls back to the whole solution with a warning recommending

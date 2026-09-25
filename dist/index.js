@@ -70345,7 +70345,7 @@ async function resolveEventRange(workspace) {
     return { base: parent.out, head };
   }
   return {
-    skipped: `this push has no previous tip (${missing}) and commit ${head} has no parent in the checkout: it is a root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 0)`
+    skipped: `the pushed range is unusable (${missing}) and commit ${head} has no parent in the checkout: it is a root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 0)`
   };
 }
 async function fetchBestEffort(workspace, sha) {

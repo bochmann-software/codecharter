@@ -150,7 +150,7 @@ test('shallow depth 1, fast-forward push: no merge base and no parent, whole sol
   const { analyze, coverage } = await bothModes(['--depth', '1', '--branch', 'main']);
 
   const reason =
-    `this push has no previous tip (\`before\` ${sha.C} has no merge base with ${sha.D} in the checkout) and ` +
+    `the pushed range is unusable (\`before\` ${sha.C} has no merge base with ${sha.D} in the checkout) and ` +
     `commit ${sha.D} has no parent in the checkout: it is a root commit, or the checkout is too shallow ` +
     '(use actions/checkout with fetch-depth: 0)';
   assert.deepEqual(analyze.result, []);

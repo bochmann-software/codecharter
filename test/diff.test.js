@@ -250,7 +250,7 @@ test('resolveEventRange: an unreachable before without a parent names both in th
   recordGit({ reachable: false, parent: '' });
   assert.deepEqual(await resolveEventRange(workspace), {
     skipped:
-      'this push has no previous tip (`before` BEFORESHA is not a commit in the checkout) and commit PUSHSHA ' +
+      'the pushed range is unusable (`before` BEFORESHA is not a commit in the checkout) and commit PUSHSHA ' +
       'has no parent in the checkout: it is a root commit, or the checkout is too shallow ' +
       '(use actions/checkout with fetch-depth: 0)',
   });
@@ -321,7 +321,7 @@ test('resolveDiffArgs: "true" on a push of a root commit warns why and analyzes 
   const result = await resolveDiffArgs('true', workspace, tmp);
   assert.deepEqual(result, []);
   assert.deepEqual(warnings, [
-    '`diff: true` did not scope this run: this push has no previous tip (`before` is the all-zero SHA) and ' +
+    '`diff: true` did not scope this run: the pushed range is unusable (`before` is the all-zero SHA) and ' +
       'commit PUSHSHA has no parent in the checkout: it is a root commit, or the checkout is too shallow ' +
       '(use actions/checkout with fetch-depth: 0). Analyzing the whole solution.',
   ]);
@@ -340,7 +340,7 @@ test('resolveEventRange: an empty before is treated like the all-zero SHA and sa
 
   recordGit({ parent: '' });
   const skipped = await resolveEventRange(workspace);
-  assert.match(skipped.skipped, /^this push has no previous tip \(`before` is empty\)/);
+  assert.match(skipped.skipped, /^the pushed range is unusable \(`before` is empty\)/);
 });
 
 test('resolveEventRange: a pull request wins over the push fields', async () => {
