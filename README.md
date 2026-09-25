@@ -55,7 +55,7 @@ jobs:
 | `require-rules` | no | `false` | Fail the run instead of falling back to the CLI's bundled sample rules when there is no rule source at all — no `rules` input, no `rules/` directory, and no `profiles:` in `.codecharter/config.yml`. A warning is logged on the bundled fallback regardless |
 | `fail-on` | no | `error` | Fail the run when violations reach this level (`error`, `warn`, `info`, `never`) |
 | `severity-threshold` | no | `info` | Minimum severity to report and annotate |
-| `diff` | no | `false` | Scope analysis to changed lines only (see below). `true` diffs a PR against its base branch; also accepts a git ref range (e.g. `main..HEAD`) or a path to a unified diff file |
+| `diff` | no | `false` | Scope the run to changed lines only (see below). `true` takes the lines changed by the pull request or push; also accepts a git ref range (e.g. `main..HEAD`) or, in analyze mode, a path to a unified diff file. In coverage mode it turns on the changed-lines gate |
 | `baseline` | no | `''` | Path to a committed baseline file of accepted findings (see below). When set, only findings not in the baseline are reported and gated, so existing findings are tolerated and only new ones fail |
 | `telemetry` | no | `false` | Opt-in: send one anonymous usage event per run (tool name, latency bucket, per-rule finding counts, hashed workspace id) to the CodeCharter endpoint. Off by default; no source, paths, or code are ever sent |
 | `badge` | no | `false` | Opt-in: attach the run's aggregate numbers (coverage percent and line totals, finding counts by severity, test counts) plus the branch to the authenticated check report, so the portal can serve repository badges (see below). Nothing is stored otherwise. Valid in both modes |
@@ -68,9 +68,10 @@ jobs:
 | `github-token` | no | `${{ github.token }}` | Token used to post the PR comment |
 | `coverage-root` | no | `''` (repo root) | Coverage mode only. Directory tree searched for test projects |
 | `min-coverage` | no | `''` (repo config) | Coverage mode only. Minimum required line coverage (0-100), e.g. `99.5`. Overrides `coverage.minimum-percent` from `.codecharter/config.yml` for this run |
+| `min-diff-coverage` | no | `''` (effective `min-coverage`) | Coverage mode only. Minimum required coverage of the changed lines (0-100), e.g. `100`. Needs `diff`; the changed-lines gate then decides the result and whole-solution coverage is only reported (see below) |
 | `skip-tests` | no | `false` | Coverage mode only. Analyze the coverage files already present under the results root instead of running the tests |
 | `results-root` | no | `''` (CLI default) | Coverage mode only. Directory for test and coverage artifacts |
-| `fail-on-threshold` | no | `true` | Coverage mode only. Set `false` to report coverage below the minimum without failing the step. Failing tests, missing data and config errors still fail |
+| `fail-on-threshold` | no | `true` | Coverage mode only. Set `false` to report coverage below the minimum without failing the step (with `diff`, the changed-lines minimum). Failing tests, missing data and config errors still fail |
 | `coverage-report` | no | `''` | Coverage mode only. Path to write the JSON coverage report to, for later steps to upload or post-process |
 
 ### Coverage gate (`mode: coverage`)
@@ -113,6 +114,55 @@ Exit codes map onto the step result: coverage below the minimum fails unless
 `fail-on-threshold: false`, while failing tests, incomplete or missing coverage
 data and configuration errors always fail — the gate is fail-closed and never
 reports a pass it could not verify.
+
+#### Gating only the changed lines
+
+With `diff` set, coverage mode gates the lines the pull request or push changed
+instead of the whole solution: `min-diff-coverage` (or, when it is empty, the
+effective `min-coverage`) applies to the changed measurable lines, and that gate
+alone decides the step, the check conclusion and its title. Whole-solution
+coverage is still measured and shown, marked as reported only. A typical setup
+holds new code to 100 % while legacy gaps are merely reported:
+
+```yaml
+on:
+  pull_request:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the compared commits must be in the checkout
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: bochmann-software/codecharter@v1
+        with:
+          mode: coverage
+          diff: true             # the lines this pull request changes
+          min-diff-coverage: 100 # every changed line must be covered
+          api-key: ${{ secrets.CODECHARTER_API_KEY }}
+```
+
+The summary and the pull request comment gain a **Changed lines** block with the
+range, the percent, the required minimum, whether it was met, how many changed
+measurable lines were checked and how many of them are covered, followed by the
+uncovered changed regions. A range that changes no measurable line (only docs or
+configuration, say) passes, and the block says outright that the gate checked 0
+lines. `diff` takes `true` or a git ref range here; a diff file is rejected,
+because the CLI computes the changed lines of a range itself. On a push,
+`diff: true` gates the pushed commits; on other events (`workflow_dispatch`,
+`schedule`, ...) it warns and the whole-solution gate runs as without `diff`.
+On a pull request the gate needs the merge-base of base and head in the
+checkout; without it (a shallow checkout) the step fails before any test runs
+and asks for `fetch-depth: 0`, rather than running the tests into a range the
+CLI cannot resolve.
+`fail-on-threshold: false` reports a missed changed-lines minimum without
+failing, exactly as it does for the whole-solution minimum. The `badge` payload
+keeps reporting whole-solution coverage. Requires a CLI with changed-line
+coverage; the default `version: latest` satisfies it.
 
 ### Solution auto-discovery
 
@@ -192,12 +242,13 @@ This requires a recent CodeCharter CLI; the default `version: latest` satisfies 
 
 The `diff` input scopes the run to only changed lines — both the reported
 findings and the `fail-on` gate then apply to those lines only, so a PR fails
-only on issues it introduces. The single value is interpreted by content:
+only on issues it introduces. (In coverage mode the same input turns on the
+changed-lines gate described above.) The single value is interpreted by content:
 
 | `diff` value | Behavior |
 |---|---|
 | `false` (default) | Analyze the whole solution. |
-| `true` | On pull requests, diff against the base branch (`merge-base..head`). Ignored on non-PR events. |
+| `true` | On pull requests, diff against the base branch (`merge-base..head`). On pushes, diff from the merge-base of `before` and the pushed commit, so a force push does not count the commits it dropped (this needs `fetch-depth: 0`). A push that creates a branch (`before` empty or all zeros) diffs the pushed commit against its parent; so does, with a warning, a push whose `before` is not in the checkout or has no merge-base with it (rewritten history, or a shallow checkout, where a multi-commit push is then scoped to its last commit). If the parent is missing too (a root commit, or a depth-1 checkout), and on every other event type, the whole solution is analyzed, with a warning that says why. On a pull request whose merge-base is not in the checkout, analyze mode diffs the base tip directly, while coverage mode fails the step (see above). |
 | a git ref range, e.g. `main..HEAD` | Diff that range. |
 | a path to a unified diff file | Use that diff as-is. |
 
@@ -309,8 +360,13 @@ sending the numbers in the first place.
 | `findings-info` | Number of info-level findings |
 | `sarif-path` | Path to the generated SARIF file, if `sarif-output` was set |
 | `coverage-percent` | Coverage mode: line-coverage percent; empty when no coverage data was produced |
-| `coverage-met` | Coverage mode: `"true"` when coverage met the required minimum |
+| `coverage-met` | Coverage mode: `"true"` when whole-solution coverage met the required minimum (only reported under a changed-lines gate) |
 | `coverage-uncovered-regions` | Coverage mode: number of uncovered regions in the report |
+| `diff-coverage-percent` | Coverage mode with `diff`: coverage percent of the changed lines; empty when no changed-lines gate ran or the range changed no measurable line |
+| `diff-coverage-met` | Coverage mode with `diff`: `"true"` when the changed lines met the required minimum; empty when no changed-lines gate ran |
+| `diff-coverage-changed-lines` | Coverage mode with `diff`: number of measurable changed lines the gate checked (`0` is a pass over nothing); empty when no gate ran |
+| `diff-coverage-covered-lines` | Coverage mode with `diff`: number of those changed lines that are covered; empty when no gate ran |
+| `diff-coverage-uncovered-regions` | Coverage mode with `diff`: number of uncovered changed regions; empty when no gate ran |
 | `coverage-report-path` | Coverage mode: path to the JSON report, if `coverage-report` was set |
 
 ## How it works

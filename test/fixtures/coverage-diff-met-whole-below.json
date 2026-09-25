@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "totalLines": 10,
+    "coveredLines": 7,
+    "percent": 70,
+    "minimumRequiredPercent": 100,
+    "hasMetThreshold": true,
+    "minimumRequiredPercentSource": "default",
+    "unresolvedSourceFileCount": 0,
+    "coverageFilesOldestUtc": "2026-09-25T08:18:24.5621629Z",
+    "coverageFilesNewestUtc": "2026-09-25T08:18:24.5621629Z"
+  },
+  "testResults": [],
+  "uncoveredRegions": [
+    {
+      "file": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+      "relativeFile": "src/Lib/Calc.cs",
+      "method": "Negate",
+      "complexity": 1,
+      "lines": [17, 18, 19],
+      "snippet": "14:     }\n15: \n16:     public static int Negate(int a)\n17:     {\n18:         return -a;\n19:     }\n20: }",
+      "snippetStartLine": 14,
+      "snippetEndLine": 20,
+      "reason": "3 consecutive lines never executed."
+    }
+  ],
+  "diffCoverage": {
+    "gitRef": "HEAD~1..HEAD",
+    "measurableChangedLines": 5,
+    "coveredChangedLines": 3,
+    "percent": 60,
+    "requiredPercent": 50,
+    "thresholdProvenance": "--min-diff-coverage",
+    "met": true,
+    "uncoveredChangedRegions": [
+      {
+        "file": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+        "relativeFile": "src/Lib/Calc.cs",
+        "method": "Negate",
+        "complexity": 1,
+        "lines": [17, 18],
+        "snippet": "14:     }\n15: \n16:     public static int Negate(int a)\n17:     {\n18:         return -a;\n19:     }\n20: }",
+        "snippetStartLine": 14,
+        "snippetEndLine": 20,
+        "reason": "3 consecutive lines never executed."
+      }
+    ]
+  }
+}

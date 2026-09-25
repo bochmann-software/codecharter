@@ -7,6 +7,65 @@ the latest release in its line.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-25
+
+### Added
+
+- Coverage mode gates changed lines. It now honours the `diff` input: `true`
+  gates the lines changed by the pull request or push, and a git ref range
+  (e.g. `origin/main..HEAD`) gates that range. The new `min-diff-coverage`
+  input sets the minimum for those lines (without it the effective
+  `min-coverage` applies). The changed-lines gate alone decides the step, the
+  check conclusion and its title; whole-solution coverage is still shown but
+  only reported, and `fail-on-threshold: false` softens the changed-lines gate
+  the same way it softens the whole-solution one. The summary and comment gain
+  a "Changed lines" block with the percent, the minimum, the verdict, how many
+  changed measurable lines were checked and covered (a range without any says
+  so explicitly), and the uncovered changed regions. New outputs
+  `diff-coverage-percent`, `diff-coverage-met`, `diff-coverage-changed-lines`,
+  `diff-coverage-covered-lines` and `diff-coverage-uncovered-regions`, empty
+  when no changed-lines gate ran. A diff file in coverage mode, an invalid
+  `min-diff-coverage`, and `min-diff-coverage` with `diff` off fail the step
+  with a message saying what to change, before the CLI is downloaded. A pull
+  request whose merge-base is not in the checkout fails the step before any
+  test runs, asking for `fetch-depth: 0`. Needs a CLI with changed-line
+  coverage (`version: latest` satisfies it). The `badge` payload keeps
+  reporting whole-solution coverage.
+
+### Changed
+
+- `diff: true` now also scopes runs triggered by a push, in both modes, instead
+  of falling back to the whole solution. A push is compared from the
+  merge-base of `before` and the pushed commit: on a fast-forward push that is
+  `before` itself, and after a force push it is the common ancestor, so the
+  dropped commits do not count as changes. This needs the history that
+  connects the two, so check out with `fetch-depth: 0`. Where no such range
+  exists the pushed commit is compared with its parent: silently for a push
+  that creates a branch (`before` empty or all zeros), and with a warning when
+  `before` is not a commit in the checkout or has no merge-base with the
+  pushed commit (rewritten history the checkout cannot connect, or a shallow
+  checkout; with `fetch-depth: 2` or more a multi-commit push is thus
+  gated on its last commit only). Tips are never compared directly. If the
+  parent is not in the checkout either (a root commit, or a depth-1 checkout),
+  the run falls back to the whole solution with a warning recommending
+  `fetch-depth: 0`, as does every other event type, with the event named.
+  Workflows that set `diff: true` and also run on `push` therefore now
+  analyze (or gate) only the pushed changes; set `diff` from an expression
+  such as `${{ github.event_name == 'pull_request' }}` to keep whole-solution
+  runs on push.
+- `coverage-met` reports the whole-solution verdict. Under a changed-lines gate
+  the CLI's own report flag carries the changed-lines verdict, so the action
+  derives the whole-solution one from the covered and measurable line counts
+  with the CLI's exact comparison (`covered × 100 ≥ required × total`, no
+  measurable line counting as met), not from the floored display percent.
+
+### Fixed
+
+- The best-effort fetch of the compared base commit (`diff: true`) used
+  `--depth=1` even in a full clone, which made the repository shallow, cut the
+  fetched commit off from its history and broke the merge-base. It now fetches
+  with `--depth=1` only when the checkout is already shallow.
+
 ## [1.9.2] - 2026-08-04
 
 ### Changed
@@ -123,7 +182,8 @@ the latest release in its line.
 See the [GitHub Releases](https://github.com/bochmann-software/codeguard/releases)
 page for the history of the `1.6.x` and earlier lines.
 
-[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.9.2...HEAD
+[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/bochmann-software/codeguard/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/bochmann-software/codeguard/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/bochmann-software/codeguard/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/bochmann-software/codeguard/compare/v1.8.0...v1.9.0

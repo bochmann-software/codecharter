@@ -40,6 +40,26 @@ let failures;
 let warnings;
 let outputs;
 let postStatus;
+let cliArgs;
+let gitCalls;
+let infos;
+let beforeReachable;
+
+// Answers git like a checkout with history: every merge-base is MERGEBASE and
+// every parent lookup PARENTSHA. Records the calls.
+function fakeGit(args, opts) {
+  gitCalls.push(args);
+  if (args.includes('cat-file')) return beforeReachable ? 0 : 128;
+  const answer = args.includes('--is-shallow-repository')
+    ? 'true'
+    : args.includes('merge-base')
+      ? 'MERGEBASE'
+      : args.includes('rev-parse')
+        ? 'PARENTSHA'
+        : '';
+  if (answer || args.includes('diff')) opts.listeners?.stdout(Buffer.from(answer ? `${answer}\n` : 'patch\n'));
+  return 0;
+}
 
 beforeEach(() => {
   saved = {
@@ -58,6 +78,8 @@ beforeEach(() => {
     post: HttpClient.prototype.post,
     get: HttpClient.prototype.get,
     payload: github.context.payload,
+    eventName: github.context.eventName,
+    sha: github.context.sha,
     env: { ...process.env },
   };
 
@@ -67,7 +89,7 @@ beforeEach(() => {
   posts = [];
   postStatus = 200;
 
-  core.info = () => {};
+  core.info = (m) => infos.push(m);
   core.debug = () => {};
   core.setSecret = () => {};
   core.warning = (m) => warnings.push(m);
@@ -100,6 +122,14 @@ beforeEach(() => {
   process.env.GITHUB_REPOSITORY = 'acme/app';
   process.env.GITHUB_REF_NAME = 'main';
   github.context.payload = { repository: { default_branch: 'main' } };
+  // Pinned so the host's own event (CI runs on push and pull_request) never
+  // decides which branch `diff: true` takes.
+  github.context.eventName = 'workflow_dispatch';
+  github.context.sha = 'PUSHSHA';
+  cliArgs = null;
+  gitCalls = [];
+  infos = [];
+  beforeReachable = true;
 });
 
 afterEach(() => {
@@ -118,6 +148,8 @@ afterEach(() => {
   HttpClient.prototype.post = saved.post;
   HttpClient.prototype.get = saved.get;
   github.context.payload = saved.payload;
+  github.context.eventName = saved.eventName;
+  github.context.sha = saved.sha;
   for (const key of Object.keys(process.env)) {
     if (key.startsWith('INPUT_') || key.startsWith('GITHUB_')) delete process.env[key];
   }
@@ -132,7 +164,9 @@ afterEach(() => {
 // exits with the given code. Returns the payload posted to the portal.
 async function coverageRun(report, options = {}, exitCode = 1) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-'));
-  exec.exec = async (_exe, args) => {
+  exec.exec = async (cmd, args, opts) => {
+    if (cmd === 'git') return fakeGit(args, opts);
+    cliArgs = args;
     if (report) fs.writeFileSync(args[args.indexOf('--output-file') + 1], JSON.stringify(report));
     return exitCode;
   };
@@ -271,7 +305,9 @@ async function analyzeRun(inputs = {}, { violations = [{ severity: 'error' }], e
   };
   tc.extractTar = extract;
   tc.extractZip = extract;
-  exec.exec = async (_exe, args) => {
+  exec.exec = async (cmd, args, opts) => {
+    if (cmd === 'git') return fakeGit(args, opts);
+    cliArgs = args;
     const jsonArg = args.find((a) => typeof a === 'string' && a.startsWith('json:'));
     fs.writeFileSync(jsonArg.slice('json:'.length), JSON.stringify({ violations }));
     return exitCode;
@@ -335,3 +371,334 @@ test('analyze mode: an unknown mode fails before anything runs', async () => {
   assert.match(failures[0], /Unknown `mode`: "lint"/);
   assert.deepEqual(posts, []);
 });
+
+// ---------------------------------------------------------------------------
+// diff: true in analyze mode (exact CLI arguments)
+// ---------------------------------------------------------------------------
+
+// The analyze arguments for App.sln in the given workspace, with the temp dir
+// read back from the json output the run chose.
+function expectedAnalyzeArgs(workspace, tail) {
+  const tmp = path.dirname(cliArgs.find((a) => a.startsWith('json:')).slice('json:'.length));
+  return [
+    'analyze',
+    path.resolve(workspace, 'App.sln'),
+    '--workspace-root',
+    workspace,
+    '--severity',
+    'info',
+    '--output',
+    'github-annotations',
+    '--output',
+    `json:${path.join(tmp, 'results.json')}`,
+    '--fail-on',
+    'error',
+    ...tail(tmp),
+  ];
+}
+
+test('analyze mode: diff: true on a pull request passes the runner-computed diff file', async () => {
+  github.context.eventName = 'pull_request';
+  github.context.payload = { pull_request: { number: 7, base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
+  await analyzeRun({ INPUT_DIFF: 'true' });
+  const workspace = process.env.GITHUB_WORKSPACE;
+  assert.deepEqual(
+    cliArgs,
+    expectedAnalyzeArgs(workspace, (tmp) => ['--diff', path.join(tmp, 'codecharter.diff')])
+  );
+  assert.deepEqual(gitCalls.at(-1), ['-C', workspace, 'diff', '--unified=0', 'MERGEBASE', 'HEADSHA']);
+});
+
+test('analyze mode: diff: true on a push diffs the pushed range', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA', repository: { default_branch: 'main' } };
+  await analyzeRun({ INPUT_DIFF: 'true' });
+  const workspace = process.env.GITHUB_WORKSPACE;
+  assert.deepEqual(
+    cliArgs,
+    expectedAnalyzeArgs(workspace, (tmp) => ['--diff', path.join(tmp, 'codecharter.diff')])
+  );
+  assert.deepEqual(gitCalls, [
+    ['-C', workspace, 'rev-parse', '--is-shallow-repository'],
+    ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BEFORESHA'],
+    ['-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}'],
+    ['-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA'],
+    ['-C', workspace, 'diff', '--unified=0', 'MERGEBASE', 'PUSHSHA'],
+  ]);
+});
+
+test('analyze mode: diff: true on another event analyzes the whole solution', async () => {
+  github.context.eventName = 'schedule';
+  await analyzeRun({ INPUT_DIFF: 'true' });
+  assert.deepEqual(
+    cliArgs,
+    expectedAnalyzeArgs(process.env.GITHUB_WORKSPACE, () => [])
+  );
+  assert.ok(
+    warnings.includes(
+      '`diff: true` did not scope this run: only pull_request and push events have changed lines to compare, ' +
+        'and this is a `schedule` event. Analyzing the whole solution.'
+    )
+  );
+});
+
+// ---------------------------------------------------------------------------
+// diff gate in coverage mode
+// ---------------------------------------------------------------------------
+
+const FIXTURES = path.join(import.meta.dirname, 'fixtures');
+const realReport = (name) => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), 'utf8'));
+
+// The coverage arguments up to the report path, for the root the run used.
+function coverageHead() {
+  const root = cliArgs[1];
+  return ['coverage', root, '--output-file', path.join(root, 'coverage.json')];
+}
+
+test('coverage mode: diff: true on a pull request gates the merge-base..head range', async () => {
+  github.context.eventName = 'pull_request';
+  github.context.payload = { pull_request: { number: 7, base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
+  const payload = await coverageRun(
+    realReport('coverage-diff-below.json'),
+    { diff: 'true', minDiffCoverage: '100', failOnThreshold: true },
+    1
+  );
+  assert.deepEqual(cliArgs, [...coverageHead(), '--git-ref', 'MERGEBASE..HEADSHA', '--min-diff-coverage', '100']);
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Diff coverage 60.00% (3/5 changed lines) is below the required minimum');
+  assert.deepEqual(failures, [
+    'Changed-line coverage is 60.00% (3 of 5 changed lines), below the required 100% (threshold from ' +
+      '`--min-diff-coverage`). What to do: cover the changed lines listed above, or pass a lower `min-diff-coverage`.',
+  ]);
+});
+
+test('coverage mode: diff: true on a push gates the pushed range', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: '0000000000000000000000000000000000000000' };
+  await coverageRun(realReport('coverage-diff-met-whole-below.json'), { diff: 'true' }, 0);
+  assert.deepEqual(cliArgs, [...coverageHead(), '--git-ref', 'PARENTSHA..PUSHSHA']);
+});
+
+test('coverage mode: the diff outputs carry the gate, and coverage-met the whole solution', async () => {
+  await coverageRun(realReport('coverage-diff-met-whole-below.json'), { diff: 'origin/main..HEAD' }, 0);
+  assert.deepEqual(cliArgs, [...coverageHead(), '--git-ref', 'origin/main..HEAD']);
+  assert.equal(outputs['diff-coverage-percent'], 60);
+  assert.equal(outputs['diff-coverage-met'], 'true');
+  assert.equal(outputs['diff-coverage-changed-lines'], 5);
+  assert.equal(outputs['diff-coverage-covered-lines'], 3);
+  assert.equal(outputs['diff-coverage-uncovered-regions'], 1);
+  assert.equal(outputs['coverage-percent'], 70);
+  assert.equal(outputs['coverage-met'], 'false', 'whole solution: 70% of 100%, whatever hasMetThreshold says');
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: a gate over zero changed lines reports 0 lines and an empty percent', async () => {
+  const payload = await coverageRun(realReport('coverage-diff-no-changed-lines.json'), { diff: 'a..b' }, 0);
+  assert.equal(outputs['diff-coverage-percent'], '');
+  assert.equal(outputs['diff-coverage-met'], 'true');
+  assert.equal(outputs['diff-coverage-changed-lines'], 0);
+  assert.equal(outputs['diff-coverage-covered-lines'], 0);
+  assert.equal(payload.title, 'Diff coverage: no measurable changed lines (gate passed over 0 lines)');
+  assert.match(payload.summary, /the changed-lines gate checked 0 lines and passed/);
+});
+
+test('coverage mode: without a diff gate every diff output is empty', async () => {
+  await coverageRun(coverageReport(), {}, 1);
+  for (const name of [
+    'diff-coverage-percent',
+    'diff-coverage-met',
+    'diff-coverage-changed-lines',
+    'diff-coverage-covered-lines',
+    'diff-coverage-uncovered-regions',
+  ]) {
+    assert.equal(outputs[name], '', name);
+  }
+  assert.deepEqual(cliArgs, coverageHead());
+});
+
+test('coverage mode: fail-on-threshold: false reports a failed diff gate without failing', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-diff-below.json'),
+    { diff: 'a..b', minDiffCoverage: '100', failOnThreshold: false },
+    1
+  );
+  assert.equal(payload.conclusion, 'neutral');
+  assert.deepEqual(failures, []);
+  assert.ok(
+    infos.includes(
+      'Changed-line coverage is 60.00% (3 of 5 changed lines), below the required 100% (threshold from ' +
+        '`--min-diff-coverage`). Not failing the build (fail-on-threshold: false).'
+    )
+  );
+});
+
+test('coverage mode: a failed diff gate with an unknown percent and minimum says so', async () => {
+  const report = realReport('coverage-diff-below.json');
+  report.diffCoverage = { measurableChangedLines: 2, coveredChangedLines: 1, met: false };
+  await coverageRun(report, { diff: 'a..b', failOnThreshold: true }, 1);
+  assert.match(
+    failures[0],
+    /^Changed-line coverage is unknown \(1 of 2 changed lines\), below the required 100% \(threshold from `default`\)/
+  );
+});
+
+test('coverage mode: a report without the diffCoverage section is flagged, not passed as a diff gate', async () => {
+  await coverageRun(coverageReport({ summary: { hasMetThreshold: true, percent: 100 } }), { diff: 'a..b' }, 0);
+  assert.ok(
+    warnings.includes(
+      'A changed-lines gate was requested (`--git-ref`), but the coverage report has no `diffCoverage` section, ' +
+        'so the result below is the whole-solution gate. What to do: use a CLI with changed-line coverage ' +
+        'support (`version: latest`).'
+    )
+  );
+  assert.equal(outputs['diff-coverage-met'], '');
+});
+
+test('coverage mode: a startup failure under a diff gate names the CLI and history requirements', async () => {
+  await coverageRun(null, { diff: 'a..b' }, 64);
+  assert.match(failures[0], /needs a CLI that supports `coverage --git-ref` \(`version: latest`\)/);
+  assert.match(failures[0], /`fetch-depth: 0`/);
+
+  failures.length = 0;
+  await coverageRun(null, {}, 64);
+  assert.doesNotMatch(failures[0], /--git-ref/);
+});
+
+test('coverage mode: a misconfigured diff gate fails before the CLI runs', async () => {
+  await coverageRun(coverageReport(), { diff: '', minDiffCoverage: '100' }, 0);
+  assert.equal(cliArgs, null, 'the CLI never ran');
+  assert.deepEqual(posts, []);
+  assert.match(failures[0], /^`min-diff-coverage` is set, but `diff` is off/);
+});
+
+test('coverage mode: run() hands the diff and min-diff-coverage inputs to the CLI', async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-cov-'));
+  process.env.GITHUB_WORKSPACE = workspace;
+  process.env['INPUT_API-KEY'] = 'KEY';
+  process.env.INPUT_CACHE = 'false';
+  process.env.INPUT_MODE = 'coverage';
+  process.env.INPUT_DIFF = 'origin/main..HEAD';
+  process.env['INPUT_MIN-DIFF-COVERAGE'] = '99.5';
+  process.env['INPUT_MIN-COVERAGE'] = '80';
+  HttpClient.prototype.get = async () => {
+    const stream = Readable.from(['archive']);
+    stream.statusCode = 200;
+    stream.headers = {};
+    return { message: stream, readBody: async () => '' };
+  };
+  const extract = async (_archive, dir) => {
+    fs.writeFileSync(path.join(dir, process.platform === 'win32' ? 'codecharter.exe' : 'codecharter'), '');
+    return dir;
+  };
+  tc.extractTar = extract;
+  tc.extractZip = extract;
+  exec.exec = async (cmd, args) => {
+    cliArgs = args;
+    fs.writeFileSync(args[args.indexOf('--output-file') + 1], JSON.stringify(realReport('coverage-diff-below.json')));
+    return 1;
+  };
+  try {
+    await run();
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+  const tmpJson = cliArgs[3];
+  assert.deepEqual(cliArgs, [
+    'coverage',
+    path.resolve(workspace, '.'),
+    '--output-file',
+    tmpJson,
+    '--min-coverage',
+    '80',
+    '--git-ref',
+    'origin/main..HEAD',
+    '--min-diff-coverage',
+    '99.5',
+  ]);
+  assert.equal(path.basename(tmpJson), 'coverage.json');
+  assert.match(failures[0], /^Changed-line coverage is 60\.00%/);
+});
+
+test('analyze mode: diff: true on a push whose before is gone diffs the commit against its parent', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA', repository: { default_branch: 'main' } };
+  beforeReachable = false;
+  await analyzeRun({ INPUT_DIFF: 'true' });
+  const workspace = process.env.GITHUB_WORKSPACE;
+  assert.deepEqual(
+    cliArgs,
+    expectedAnalyzeArgs(workspace, (tmp) => ['--diff', path.join(tmp, 'codecharter.diff')])
+  );
+  assert.deepEqual(gitCalls.at(-1), ['-C', workspace, 'diff', '--unified=0', 'PARENTSHA', 'PUSHSHA']);
+  assert.ok(
+    warnings.includes(
+      "The push's previous tip BEFORESHA is not a commit in the checkout: the push rewrote history, or the " +
+        'checkout does not contain it. Comparing PUSHSHA with its parent instead.'
+    )
+  );
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: diff: true on a push whose before is gone gates parent..sha', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA' };
+  beforeReachable = false;
+  await coverageRun(realReport('coverage-diff-met-whole-below.json'), { diff: 'true', minDiffCoverage: '50' }, 0);
+  assert.deepEqual(cliArgs, [...coverageHead(), '--git-ref', 'PARENTSHA..PUSHSHA', '--min-diff-coverage', '50']);
+  assert.ok(
+    warnings.includes(
+      "The push's previous tip BEFORESHA is not a commit in the checkout: the push rewrote history, or the " +
+        'checkout does not contain it. Comparing PUSHSHA with its parent instead.'
+    )
+  );
+  assert.deepEqual(failures, []);
+});
+
+// A configuration error in the changed-lines gate must fail before the CLI is
+// downloaded: every portal GET (manifest or archive) is recorded, and none may
+// happen.
+for (const [label, inputs, message] of [
+  [
+    'a diff file',
+    { INPUT_DIFF: 'changes.diff' },
+    /^`diff` points at the file "changes\.diff", but coverage mode gates a git ref range/,
+  ],
+  [
+    'an invalid min-diff-coverage',
+    { INPUT_DIFF: 'true', 'INPUT_MIN-DIFF-COVERAGE': '99,5' },
+    /^Invalid `min-diff-coverage` "99,5"/,
+  ],
+  [
+    'min-diff-coverage without diff',
+    { 'INPUT_MIN-DIFF-COVERAGE': '100' },
+    /^`min-diff-coverage` is set, but `diff` is off/,
+  ],
+]) {
+  test(`coverage mode: ${label} fails before the CLI download`, async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-cfg-'));
+    fs.writeFileSync(path.join(workspace, 'changes.diff'), 'patch');
+    process.env.GITHUB_WORKSPACE = workspace;
+    process.env['INPUT_API-KEY'] = 'KEY';
+    process.env.INPUT_MODE = 'coverage';
+    for (const [key, value] of Object.entries(inputs)) process.env[key] = value;
+    const downloads = [];
+    HttpClient.prototype.get = async (url) => {
+      downloads.push(url);
+      throw new Error('no download expected');
+    };
+    exec.exec = async (cmd, args) => {
+      cliArgs = [cmd, ...args];
+      return 0;
+    };
+    try {
+      await run();
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], message);
+    assert.deepEqual(downloads, [], 'obtainCli never asked the portal for the CLI');
+    assert.equal(cliArgs, null, 'nothing was executed');
+    assert.deepEqual(posts, []);
+  });
+}

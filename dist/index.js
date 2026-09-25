@@ -70289,36 +70289,85 @@ function hasConfiguredProfiles(workspace) {
   }
   return false;
 }
+async function gitCapture(args) {
+  let out = "";
+  const code = await exec2.exec("git", args, {
+    ignoreReturnCode: true,
+    silent: true,
+    listeners: {
+      stdout: (d) => {
+        out += d.toString();
+      }
+    }
+  });
+  return { code, out: out.trim() };
+}
+var ZERO_SHA = /^0+$/;
+async function resolveEventRange(workspace) {
+  const pr = github.context.payload.pull_request;
+  if (pr) {
+    const base = pr.base?.sha;
+    const head2 = pr.head?.sha;
+    await fetchBestEffort(workspace, base);
+    const mb = await gitCapture(["-C", workspace, "merge-base", base, head2]);
+    if (mb.code === 0 && mb.out) return { base: mb.out, head: head2 };
+    return { base, head: head2, unconnected: true };
+  }
+  if (github.context.eventName !== "push") {
+    return {
+      skipped: `only pull_request and push events have changed lines to compare, and this is a \`${github.context.eventName || "unknown"}\` event`
+    };
+  }
+  const head = github.context.sha;
+  const before = String(github.context.payload.before || "").trim();
+  let missing;
+  let warning2 = "";
+  if (!before) {
+    missing = "`before` is empty";
+  } else if (ZERO_SHA.test(before)) {
+    missing = "`before` is the all-zero SHA";
+  } else {
+    await fetchBestEffort(workspace, before);
+    const reachable = await gitCapture(["-C", workspace, "cat-file", "-e", `${before}^{commit}`]);
+    if (reachable.code !== 0) {
+      missing = `\`before\` ${before} is not a commit in the checkout`;
+      warning2 = `The push's previous tip ${before} is not a commit in the checkout: the push rewrote history, or the checkout does not contain it.`;
+    } else {
+      const mb = await gitCapture(["-C", workspace, "merge-base", before, head]);
+      if (mb.code === 0 && mb.out) return { base: mb.out, head };
+      missing = `\`before\` ${before} has no merge base with ${head} in the checkout`;
+      warning2 = `The push's previous tip ${before} has no merge base with ${head} in the checkout: the push rewrote history, or the checkout is shallow (use actions/checkout with fetch-depth: 0 to gate the whole pushed range).`;
+    }
+  }
+  const parent = await gitCapture(["-C", workspace, "rev-parse", "--verify", "--quiet", `${head}~1^{commit}`]);
+  if (parent.code === 0 && parent.out) {
+    if (warning2) core.warning(`${warning2} Comparing ${head} with its parent instead.`);
+    return { base: parent.out, head };
+  }
+  return {
+    skipped: `the pushed range is unusable (${missing}) and commit ${head} has no parent in the checkout: it is a root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 0)`
+  };
+}
+async function fetchBestEffort(workspace, sha) {
+  const shallow = await gitCapture(["-C", workspace, "rev-parse", "--is-shallow-repository"]);
+  const depth = shallow.code === 0 && shallow.out === "true" ? ["--depth=1"] : [];
+  await exec2.exec("git", ["-C", workspace, "fetch", "--no-tags", ...depth, "origin", sha], {
+    ignoreReturnCode: true,
+    silent: true
+  });
+}
 async function resolveDiffArgs(diffInput, workspace, tmp) {
   const value = (diffInput || "").trim();
   const lower = value.toLowerCase();
   if (!value || lower === "false") return [];
   const gitDiffArgs = ["-C", workspace, "diff", "--unified=0"];
   if (lower === "true") {
-    const pr = github.context.payload.pull_request;
-    if (!pr) {
-      core.warning("`diff: true` only scopes analysis on pull_request events; analyzing the whole solution.");
+    const range2 = await resolveEventRange(workspace);
+    if (range2.skipped) {
+      core.warning(`\`diff: true\` did not scope this run: ${range2.skipped}. Analyzing the whole solution.`);
       return [];
     }
-    const baseSha = pr.base?.sha;
-    const headSha = pr.head?.sha;
-    await exec2.exec("git", ["-C", workspace, "fetch", "--no-tags", "--depth=1", "origin", baseSha], {
-      ignoreReturnCode: true,
-      silent: true
-    });
-    let base = baseSha;
-    let mb = "";
-    const mbCode = await exec2.exec("git", ["-C", workspace, "merge-base", baseSha, headSha], {
-      ignoreReturnCode: true,
-      silent: true,
-      listeners: {
-        stdout: (d) => {
-          mb += d.toString();
-        }
-      }
-    });
-    if (mbCode === 0 && mb.trim()) base = mb.trim();
-    gitDiffArgs.push(base, headSha);
+    gitDiffArgs.push(range2.base, range2.head);
   } else {
     const asWorkspace = path14.resolve(workspace, value);
     if (fs10.existsSync(asWorkspace) && fs10.statSync(asWorkspace).isFile()) {
@@ -70355,6 +70404,71 @@ async function resolveDiffArgs(diffInput, workspace, tmp) {
     core.warning("The resolved diff is empty; in diff mode that means nothing is analyzed.");
   }
   return ["--diff", diffFile];
+}
+function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
+  const minDiff = (minDiffInput || "").trim();
+  if (minDiff && !isPercentInput(minDiff)) {
+    core.setFailed(
+      `Invalid \`min-diff-coverage\` "${minDiff}". Use a number from 0 to 100 with a dot as the decimal separator, e.g. \`100\` or \`99.5\`.`
+    );
+    return false;
+  }
+  const value = (diffInput || "").trim();
+  const lower = value.toLowerCase();
+  if (!value || lower === "false") {
+    if (!minDiff) return true;
+    core.setFailed(
+      "`min-diff-coverage` is set, but `diff` is off, so there are no changed lines to gate. What to do: set `diff: true` (or a git ref range) to gate the changed lines, or remove `min-diff-coverage`."
+    );
+    return false;
+  }
+  if (lower === "true") return true;
+  const asWorkspace = path14.resolve(workspace, value);
+  if (fs10.existsSync(asWorkspace) && fs10.statSync(asWorkspace).isFile()) {
+    core.setFailed(
+      `\`diff\` points at the file "${value}", but coverage mode gates a git ref range, not a diff file. What to do: set \`diff: true\` to gate the pull request's or push's changed lines, or pass a range such as \`origin/main..HEAD\`.`
+    );
+    return false;
+  }
+  if (value.includes("..")) return true;
+  core.setFailed(
+    `Invalid \`diff\` input "${value}" for coverage mode. Use 'true'/'false' or a git ref range (e.g. origin/main..HEAD).`
+  );
+  return false;
+}
+async function resolveCoverageGitRef(diffInput, workspace) {
+  const value = (diffInput || "").trim();
+  const lower = value.toLowerCase();
+  if (!value || lower === "false") return { gitRef: null, skipped: false };
+  if (lower !== "true") return { gitRef: value, skipped: false };
+  const range2 = await resolveEventRange(workspace);
+  if (range2.skipped) {
+    core.warning(`\`diff: true\` did not scope this run: ${range2.skipped}. Gating whole-solution coverage instead.`);
+    return { gitRef: null, skipped: true };
+  }
+  if (range2.unconnected) {
+    core.setFailed(
+      `Cannot gate the pull request's changed lines: the merge base between base ${range2.base} and head ${range2.head} is not in the checkout. Coverage diff mode needs it. What to do: check out with \`fetch-depth: 0\` on actions/checkout.`
+    );
+    return null;
+  }
+  return { gitRef: `${range2.base}..${range2.head}`, skipped: false };
+}
+function isPercentInput(value) {
+  return /^\d+(\.\d+)?$/.test(value) && Number(value) <= 100;
+}
+async function resolveCoverageDiffArgs(options, workspace) {
+  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace)) return null;
+  const minDiff = (options.minDiffCoverage || "").trim();
+  const resolved = await resolveCoverageGitRef(options.diff, workspace);
+  if (resolved === null) return null;
+  if (!resolved.gitRef) {
+    if (minDiff) core.warning("`min-diff-coverage` is ignored because no diff gate runs on this event.");
+    return [];
+  }
+  const args = ["--git-ref", resolved.gitRef];
+  if (minDiff) args.push("--min-diff-coverage", minDiff);
+  return args;
 }
 function readJson(filePath) {
   try {
@@ -70509,18 +70623,44 @@ function coverageSummary(report) {
   const s = report && report.summary || {};
   const percent = typeof s.percent === "number" ? s.percent : null;
   const required = typeof s.minimumRequiredPercent === "number" ? s.minimumRequiredPercent : null;
+  const diff = diffCoverageSummary(report && report.diffCoverage);
   return {
     total: Number(s.totalLines) || 0,
     covered: Number(s.coveredLines) || 0,
     percent,
     required,
     source: s.minimumRequiredPercentSource || "default",
-    met: s.hasMetThreshold === true,
+    // Under a diff gate the CLI's `hasMetThreshold` carries the diff verdict, so
+    // the whole-solution verdict (only reported then) is taken from its own
+    // numbers instead.
+    met: diff ? percent !== null && required !== null && meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required) : s.hasMetThreshold === true,
     regions: report && report.uncoveredRegions || [],
     projects: report && report.testResults || [],
     // Summed once here so the comment and the badge payload read the same
     // numbers without walking the projects twice.
-    testCounts: testCountsFor(report && report.testResults)
+    testCounts: testCountsFor(report && report.testResults),
+    diff
+  };
+}
+function meetsThreshold(covered, total, required) {
+  if (total === 0) return true;
+  const match2 = /^(\d+)(?:\.(\d+))?$/.exec(String(required));
+  if (!match2) return covered * 100 >= required * total;
+  const fraction = match2[2] || "";
+  const scale = 10n ** BigInt(fraction.length);
+  return BigInt(covered) * 100n * scale >= BigInt(match2[1] + fraction) * BigInt(total);
+}
+function diffCoverageSummary(d) {
+  if (!d || typeof d !== "object") return null;
+  return {
+    gitRef: typeof d.gitRef === "string" ? d.gitRef : "",
+    changed: Number(d.measurableChangedLines) || 0,
+    covered: Number(d.coveredChangedLines) || 0,
+    percent: typeof d.percent === "number" ? d.percent : null,
+    required: typeof d.requiredPercent === "number" ? d.requiredPercent : null,
+    source: d.thresholdProvenance || "default",
+    met: d.met === true,
+    regions: Array.isArray(d.uncoveredChangedRegions) ? d.uncoveredChangedRegions : []
   };
 }
 var COUNT_FIELDS = ["total", "passed", "failed", "skipped"];
@@ -70628,7 +70768,7 @@ function buildCoverageComment(summary2, workspace, opts) {
       "_No coverage data was produced, so the gate could not be evaluated._"
     ].join("\n");
   }
-  const head = coverageHeadLines(summary2, heading);
+  const head = [...coverageHeadLines(summary2, heading), ...diffCoverageLines(summary2.diff, workspace, opts)];
   const tail = coverageRegionLines(summary2, workspace, opts);
   let markdown = "";
   for (const mode of TEST_TABLE_MODES) {
@@ -70637,26 +70777,54 @@ function buildCoverageComment(summary2, workspace, opts) {
   }
   return markdown;
 }
+function shieldBadge(alt, label, message, color) {
+  return `![${alt}](https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(message)}-${color}?style=flat-square)`;
+}
 function coverageHeadLines(summary2, heading) {
   const lines = [heading, ""];
   const shown = summary2.percent.toFixed(2);
-  const color = summary2.met ? "brightgreen" : "red";
-  let badges = `![coverage](https://img.shields.io/badge/coverage-${encodeURIComponent(`${shown}%`)}-${color}?style=flat-square)`;
+  const color = summary2.met ? "brightgreen" : summary2.diff ? "yellow" : "red";
+  let badges = shieldBadge("coverage", "coverage", `${shown}%`, color);
   if (summary2.required !== null) {
-    badges += ` ![required](https://img.shields.io/badge/required-${encodeURIComponent(`${summary2.required}%`)}-blue?style=flat-square)`;
+    badges += ` ${shieldBadge("required", "required", `${summary2.required}%`, "blue")}`;
   }
   lines.push(badges, "");
+  const verdict = summary2.diff ? "; whole solution reported only, the changed-lines gate decides this run" : "";
   lines.push(
-    `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`).`,
+    `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`${verdict}).`,
     ""
   );
   return lines;
 }
-function coverageRegionLines(summary2, workspace, opts) {
-  const { repoFull, sha, failOnThreshold } = opts;
+function diffCoverageLines(diff, workspace, opts) {
+  if (!diff) return [];
+  const lines = [`### Changed lines${diff.gitRef ? ` (\`${diff.gitRef}\`)` : ""}`, ""];
+  const required = diff.required === null ? "" : ` ${shieldBadge("required", "required", `${diff.required}%`, "blue")}`;
+  if (diff.changed === 0) {
+    lines.push(
+      `${shieldBadge("diff coverage", "diff coverage", "no changed lines", "lightgrey")}${required}`,
+      "",
+      "**No measurable line changed**, so the changed-lines gate checked 0 lines and passed.",
+      ""
+    );
+    return lines;
+  }
+  const shown = diff.percent === null ? "unknown" : `${diff.percent.toFixed(2)}%`;
+  lines.push(
+    `${shieldBadge("diff coverage", "diff coverage", shown, diff.met ? "brightgreen" : "red")}${required}`,
+    ""
+  );
+  lines.push(
+    `${diff.covered} of ${diff.changed} changed measurable lines covered (threshold from \`${diff.source}\`): **${diff.met ? "met" : "not met"}**.`,
+    ""
+  );
+  lines.push(...regionTableLines(diff.regions, workspace, opts, "uncovered changed region(s)"));
+  return lines;
+}
+function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
   const lines = [];
   const byFile = /* @__PURE__ */ new Map();
-  for (const region of summary2.regions) {
+  for (const region of regionList) {
     const key = displayPath(region.relativeFile || region.file, workspace);
     if (!byFile.has(key)) byFile.set(key, []);
     byFile.get(key).push(region);
@@ -70667,7 +70835,7 @@ function coverageRegionLines(summary2, workspace, opts) {
     if (truncated) break;
     lines.push(
       "<details>",
-      `<summary>${file} (${regions.length} uncovered region(s))</summary>`,
+      `<summary>${file} (${regions.length} ${label})</summary>`,
       "",
       "| Lines | Method | Location |",
       "|-------|--------|----------|"
@@ -70689,13 +70857,30 @@ function coverageRegionLines(summary2, workspace, opts) {
     lines.push("", "</details>", "");
   }
   if (truncated) {
-    lines.push(`_Showing the first ${MAX_COMMENT_ROWS} uncovered regions; the full report is in the job summary._`, "");
+    lines.push(
+      `_Showing the first ${MAX_COMMENT_ROWS} ${label.replace("(s)", "s")}; the full report is in the job summary._`,
+      ""
+    );
   }
+  return lines;
+}
+function coverageRegionLines(summary2, workspace, opts) {
+  const lines = regionTableLines(summary2.regions, workspace, opts, "uncovered region(s)");
   lines.push("---");
-  lines.push(coverageFooterLine(summary2, failOnThreshold));
+  lines.push(coverageFooterLine(summary2, opts.failOnThreshold));
   return lines;
 }
 function coverageFooterLine(summary2, failOnThreshold) {
+  const diff = summary2.diff;
+  if (diff) {
+    if (diff.met) {
+      return diff.changed === 0 ? "_The changed-lines gate passed without a measurable changed line to check._" : "_Changed lines meet the required minimum._";
+    }
+    if (!failOnThreshold) {
+      return "_Changed-line coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._";
+    }
+    return "_Cover the changed lines listed above before merging, or lower `min-diff-coverage`._";
+  }
   if (summary2.met) return "_Coverage meets the required minimum._";
   if (!failOnThreshold) {
     return "_Coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._";
@@ -70712,6 +70897,12 @@ function coverageTitle(exitCode, summary2) {
   if (exitCode === 3) return "No coverage data";
   if (exitCode === 64) return "Coverage could not run (usage, config, or environment error)";
   if (summary2.percent === null) return "No coverage data";
+  const diff = summary2.diff;
+  if (diff) {
+    if (diff.changed === 0) return "Diff coverage: no measurable changed lines (gate passed over 0 lines)";
+    const shownDiff = `${diff.percent === null ? "unknown" : `${diff.percent.toFixed(2)}%`} (${diff.covered}/${diff.changed} changed lines)`;
+    return diff.met ? `Diff coverage ${shownDiff}` : `Diff coverage ${shownDiff} is below the required minimum`;
+  }
   const shown = `${summary2.percent.toFixed(2)}%`;
   return summary2.met ? `Coverage ${shown}` : `Coverage ${shown} is below the required minimum`;
 }
@@ -70887,11 +71078,14 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
 }
 async function runCoverage(ctx) {
   const { exe, env, workspace, tmp, portal, apiKey, options } = ctx;
+  const diffArgs = await resolveCoverageDiffArgs(options, workspace);
+  if (diffArgs === null) return;
   const jsonPath = options.reportOutput ? path14.resolve(workspace, options.reportOutput) : path14.join(tmp, "coverage.json");
   const args = ["coverage", path14.resolve(workspace, options.root || "."), "--output-file", jsonPath];
   if (options.minCoverage) args.push("--min-coverage", options.minCoverage);
   if (options.skipTests) args.push("--skip-tests");
   if (options.resultsRoot) args.push("--results-root", path14.resolve(workspace, options.resultsRoot));
+  args.push(...diffArgs);
   const hasDotnet = await io.which("dotnet", false) || process.env.DOTNET_ROOT;
   if (!hasDotnet) {
     core.warning(
@@ -70905,6 +71099,12 @@ async function runCoverage(ctx) {
   core.setOutput("coverage-met", String(summary2.met));
   core.setOutput("coverage-uncovered-regions", summary2.regions.length);
   if (options.reportOutput) core.setOutput("coverage-report-path", jsonPath);
+  setDiffCoverageOutputs(summary2.diff);
+  if (diffArgs.length > 0 && report && !summary2.diff && (code === 0 || code === 1)) {
+    core.warning(
+      "A changed-lines gate was requested (`--git-ref`), but the coverage report has no `diffCoverage` section, so the result below is the whole-solution gate. What to do: use a CLI with changed-line coverage support (`version: latest`)."
+    );
+  }
   const repoFull = process.env.GITHUB_REPOSITORY || `${github.context.repo.owner}/${github.context.repo.repo}`;
   const sha = github.context.payload.pull_request?.head?.sha || github.context.sha;
   const titleSuffix = options.commentKey || options.root || "";
@@ -70941,6 +71141,18 @@ async function runCoverage(ctx) {
     await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
   }
   if (code === 0) return;
+  if (code === 1 && summary2.diff) {
+    const d = summary2.diff;
+    const detail = `Changed-line coverage is ${d.percent === null ? "unknown" : `${d.percent.toFixed(2)}%`} (${d.covered} of ${d.changed} changed lines), below the required ${d.required ?? 100}% (threshold from \`${d.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(
+        `${detail} What to do: cover the changed lines listed above, or pass a lower \`min-diff-coverage\`.`
+      );
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
   if (code === 1) {
     const detail = `Coverage is ${summary2.percent === null ? "unknown" : `${summary2.percent.toFixed(2)}%`}, below the required ${summary2.required ?? 100}% (threshold from \`${summary2.source}\`).`;
     if (options.failOnThreshold) {
@@ -70965,8 +71177,15 @@ async function runCoverage(ctx) {
     return;
   }
   core.setFailed(
-    `The coverage run could not start (exit code ${code === null ? "null (process terminated)" : code}). Common causes are a missing .NET SDK, an unwritable report path, or an invalid \`.codecharter\` config. Check the messages above.`
+    `The coverage run could not start (exit code ${code === null ? "null (process terminated)" : code}). Common causes are a missing .NET SDK, an unwritable report path, or an invalid \`.codecharter\` config. ` + (diffArgs.length > 0 ? "The changed-lines gate (`diff`) also needs a CLI that supports `coverage --git-ref` (`version: latest`) and the compared commits in the checkout (`actions/checkout` with `fetch-depth: 0`). " : "") + "Check the messages above."
   );
+}
+function setDiffCoverageOutputs(diff) {
+  core.setOutput("diff-coverage-percent", diff && diff.percent !== null ? diff.percent : "");
+  core.setOutput("diff-coverage-met", diff ? String(diff.met) : "");
+  core.setOutput("diff-coverage-changed-lines", diff ? diff.changed : "");
+  core.setOutput("diff-coverage-covered-lines", diff ? diff.covered : "");
+  core.setOutput("diff-coverage-uncovered-regions", diff ? diff.regions.length : "");
 }
 async function run() {
   const apiKey = core.getInput("api-key", { required: true });
@@ -71014,6 +71233,9 @@ async function run() {
     }
     core.info(`Auto-discovered solution: ${solution}`);
   }
+  if (mode === "coverage" && !validateCoverageDiffInputs(diffInput, core.getInput("min-diff-coverage"), workspace)) {
+    return;
+  }
   const tmp = fs10.mkdtempSync(path14.join(os10.tmpdir(), "codecharter-"));
   try {
     const exe = await obtainCli({
@@ -71046,6 +71268,8 @@ async function run() {
         options: {
           root: core.getInput("coverage-root"),
           minCoverage: core.getInput("min-coverage"),
+          diff: diffInput,
+          minDiffCoverage: core.getInput("min-diff-coverage"),
           skipTests: (core.getInput("skip-tests") || "false").toLowerCase() === "true",
           resultsRoot: core.getInput("results-root"),
           failOnThreshold: (core.getInput("fail-on-threshold") || "true").toLowerCase() !== "false",
@@ -71233,6 +71457,7 @@ export {
   coverageFooterLine,
   coverageSummary,
   coverageTitle,
+  diffCoverageSummary,
   discoverSolutions,
   displayPath,
   downloadArchive,
@@ -71244,14 +71469,19 @@ export {
   footerLine,
   hasConfiguredProfiles,
   isMainModule,
+  isPercentInput,
   locationLink,
+  meetsThreshold,
   minSeverityColor,
   obtainCli,
   projectFailed,
   projectResultCell,
   publishViaPortal,
   readJson,
+  resolveCoverageDiffArgs,
+  resolveCoverageGitRef,
   resolveDiffArgs,
+  resolveEventRange,
   resolvePlatform,
   run,
   runCoverage,
@@ -71264,6 +71494,7 @@ export {
   testTableRows,
   titleFor,
   upsertComment,
+  validateCoverageDiffInputs,
   verifySha,
   withBadge,
   writeSummary

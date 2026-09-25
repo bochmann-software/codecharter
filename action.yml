@@ -57,16 +57,27 @@ inputs:
     default: 'info'
   diff:
     description: |
-      Scope the analysis to only changed lines. One input, interpreted by value:
+      Scope the run to only changed lines. One input, interpreted by value:
         - 'false' (default) — analyze the whole solution.
-        - 'true' — on pull requests, diff against the base branch
-          (merge-base..head). Ignored (with a warning) on non-PR events.
+        - 'true' — the lines changed by the triggering event. On pull requests,
+          the base branch against the head (merge-base..head). On pushes, the
+          merge-base of `before` and sha against sha, so a force push does not
+          count the commits it dropped (needs fetch-depth: 0). When `before` is
+          empty or all zeros (a new branch), or, with a warning, not in the
+          checkout or without a merge-base with sha (rewritten history, or a
+          shallow checkout), the pushed commit against its parent (sha~1..sha).
+          If that parent is missing too (a root commit, or a depth-1 checkout)
+          and on any other event type the run falls back to the whole solution
+          with a warning. In coverage mode a pull request whose merge-base is
+          not in the checkout fails the step before any test runs (use
+          fetch-depth: 0); analyze mode then diffs the base tip directly.
         - a git ref range, e.g. 'main..HEAD' or 'origin/main..HEAD'.
-        - a path to a unified diff file in the repository.
-      In every diff mode both the reported findings and the fail-on gate apply
-      only to changed lines. The diff is computed on the runner, so check out
-      enough history (actions/checkout with fetch-depth: 0) for the compared
-      commits to be reachable.
+        - a path to a unified diff file in the repository (analyze mode only).
+      In analyze mode both the reported findings and the fail-on gate apply only
+      to changed lines. In coverage mode the gate applies to the changed lines
+      (see `min-diff-coverage`) and whole-solution coverage is only reported.
+      Check out enough history (actions/checkout with fetch-depth: 0) for the
+      compared commits to be reachable.
     required: false
     default: 'false'
   baseline:
@@ -157,6 +168,18 @@ inputs:
       `.codecharter/config.yml` for this run; leave empty to use the repo config.
     required: false
     default: ''
+  min-diff-coverage:
+    description: |
+      Coverage mode only. Minimum required coverage of the changed lines (0-100),
+      written locale-independently (e.g. `100` or `99.5`). Needs `diff`: with
+      `diff: true` or a git ref range the step gates the lines that range
+      changed, and that gate alone decides the result; whole-solution coverage
+      is then only reported. Leave empty to apply the effective `min-coverage`
+      to the changed lines. Setting it while `diff` is off fails the step; on an
+      event where `diff: true` finds no range it is ignored with a warning.
+      Requires a CLI with changed-line coverage (`version: latest` satisfies it).
+    required: false
+    default: ''
   skip-tests:
     description: |
       Coverage mode only. When `true`, do not run the tests; analyze the coverage
@@ -173,8 +196,9 @@ inputs:
   fail-on-threshold:
     description: |
       Coverage mode only. When `false`, coverage below the minimum is reported but
-      does not fail the step. Failing tests, missing coverage data and configuration
-      errors still fail regardless of this input.
+      does not fail the step; with a changed-lines gate (`diff`) this applies to
+      that gate. Failing tests, missing coverage data and configuration errors
+      still fail regardless of this input.
     required: false
     default: 'true'
   coverage-report:
@@ -189,9 +213,23 @@ outputs:
   coverage-percent:
     description: Line-coverage percent from the coverage run; empty when no coverage data was produced.
   coverage-met:
-    description: '"true" when coverage met the required minimum.'
+    description: |
+      "true" when whole-solution coverage met the required minimum. Under a
+      changed-lines gate this is only reported; `diff-coverage-met` decides.
   coverage-uncovered-regions:
     description: Number of uncovered regions in the coverage report.
+  diff-coverage-percent:
+    description: |
+      Coverage percent of the changed lines. Empty when no changed-lines gate
+      ran, and when the range changed no measurable line.
+  diff-coverage-met:
+    description: '"true" when the changed lines met the required minimum; empty when no changed-lines gate ran.'
+  diff-coverage-changed-lines:
+    description: Number of measurable changed lines the gate checked (0 is a pass over nothing); empty when no gate ran.
+  diff-coverage-covered-lines:
+    description: Number of those changed lines that are covered; empty when no changed-lines gate ran.
+  diff-coverage-uncovered-regions:
+    description: Number of uncovered changed regions in the report; empty when no changed-lines gate ran.
   coverage-report-path:
     description: Path to the JSON coverage report, if coverage-report was set.
   findings-total:
