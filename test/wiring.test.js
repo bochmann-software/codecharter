@@ -50,7 +50,13 @@ let beforeReachable;
 function fakeGit(args, opts) {
   gitCalls.push(args);
   if (args.includes('cat-file')) return beforeReachable ? 0 : 128;
-  const answer = args.includes('merge-base') ? 'MERGEBASE' : args.includes('rev-parse') ? 'PARENTSHA' : '';
+  const answer = args.includes('--is-shallow-repository')
+    ? 'true'
+    : args.includes('merge-base')
+      ? 'MERGEBASE'
+      : args.includes('rev-parse')
+        ? 'PARENTSHA'
+        : '';
   if (answer || args.includes('diff')) opts.listeners?.stdout(Buffer.from(answer ? `${answer}\n` : 'patch\n'));
   return 0;
 }
@@ -413,6 +419,7 @@ test('analyze mode: diff: true on a push diffs the pushed range', async () => {
     expectedAnalyzeArgs(workspace, (tmp) => ['--diff', path.join(tmp, 'codecharter.diff')])
   );
   assert.deepEqual(gitCalls, [
+    ['-C', workspace, 'rev-parse', '--is-shallow-repository'],
     ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BEFORESHA'],
     ['-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}'],
     ['-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA'],

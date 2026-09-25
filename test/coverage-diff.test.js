@@ -29,6 +29,7 @@ import {
   validateCoverageDiffInputs,
   isPercentInput,
   diffCoverageSummary,
+  meetsThreshold,
   coverageSummary,
   buildCoverageComment,
   coverageFooterLine,
@@ -75,6 +76,10 @@ beforeEach(() => {
   exec.exec = async (cmd, args, opts) => {
     gitCalls.push([cmd, ...args]);
     if (args.includes('cat-file')) return reachable ? 0 : 128;
+    if (args.includes('--is-shallow-repository')) {
+      opts.listeners.stdout(Buffer.from('true\n'));
+      return 0;
+    }
     if (args.includes('merge-base')) {
       opts.listeners.stdout(Buffer.from('MERGEBASE\n'));
       return 0;
@@ -114,6 +119,7 @@ test('resolveCoverageGitRef: "true" on a pull request is the merge-base..head ra
   github.context.payload = { pull_request: { base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
   assert.deepEqual(await resolveCoverageGitRef('true', workspace), { gitRef: 'MERGEBASE..HEADSHA', skipped: false });
   assert.deepEqual(gitCalls, [
+    ['git', '-C', workspace, 'rev-parse', '--is-shallow-repository'],
     ['git', '-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BASESHA'],
     ['git', '-C', workspace, 'merge-base', 'BASESHA', 'HEADSHA'],
   ]);
@@ -123,8 +129,8 @@ test('resolveCoverageGitRef: "true" on a push is the pushed range', async () => 
   github.context.eventName = 'push';
   github.context.payload = { before: 'BEFORESHA' };
   assert.deepEqual(await resolveCoverageGitRef('true', workspace), { gitRef: 'MERGEBASE..PUSHSHA', skipped: false });
-  assert.deepEqual(gitCalls[1], ['git', '-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}']);
-  assert.deepEqual(gitCalls[2], ['git', '-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA']);
+  assert.deepEqual(gitCalls[2], ['git', '-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}']);
+  assert.deepEqual(gitCalls[3], ['git', '-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA']);
 });
 
 test('resolveCoverageGitRef: "true" on a push whose before is not in the checkout is parent..sha', async () => {
@@ -417,4 +423,32 @@ test('validateCoverageDiffInputs: usable inputs pass without touching git', () =
   assert.equal(validateCoverageDiffInputs('origin/main..HEAD', '99.5', workspace), true);
   assert.deepEqual(failures, []);
   assert.deepEqual(gitCalls, []);
+});
+
+// ---------------------------------------------------------------------------
+// whole-solution verdict under a diff gate: the CLI's exact comparison
+// ---------------------------------------------------------------------------
+
+test('meetsThreshold compares covered*100 against required*total exactly, like the CLI', () => {
+  assert.equal(meetsThreshold(19999, 20000, 99.995), true, '99.995% exactly is met');
+  assert.equal(meetsThreshold(19998, 20000, 99.995), false);
+  assert.equal(meetsThreshold(1, 3, 33.33), true);
+  assert.equal(meetsThreshold(99, 100, 100), false);
+  assert.equal(meetsThreshold(0, 0, 100), true, 'no measurable line counts as met');
+  assert.equal(meetsThreshold(1, 10, 1e-7), true, 'exponent notation falls back to floating point');
+  assert.equal(meetsThreshold(0, 10, 1e-7), false);
+});
+
+test('coverageSummary: 19999 of 20000 lines at 99.995% is met although the floored percent is 99.99', () => {
+  const report = fixture(MET_WHOLE_BELOW);
+  report.summary = {
+    ...report.summary,
+    totalLines: 20000,
+    coveredLines: 19999,
+    percent: 99.99,
+    minimumRequiredPercent: 99.995,
+  };
+  assert.equal(coverageSummary(report).met, true);
+  report.summary.coveredLines = 19998;
+  assert.equal(coverageSummary(report).met, false);
 });

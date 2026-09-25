@@ -177,13 +177,18 @@ test('resolveDiffArgs: "true" on a PR falls back to the base tip when merge-base
 // ---------------------------------------------------------------------------
 
 // Records every git call and answers them like a checkout with history: the
-// merge-base of anything is MERGEBASE, PUSHSHA~1 resolves to PARENTSHA, and
-// `before` is a commit in the checkout, unless the test says otherwise.
-function recordGit({ parent = 'PARENTSHA', mergeBase = 'MERGEBASE', reachable = true } = {}) {
+// merge-base of anything is MERGEBASE, PUSHSHA~1 resolves to PARENTSHA, the
+// checkout is shallow, and `before` is a commit in it, unless the test says
+// otherwise.
+function recordGit({ parent = 'PARENTSHA', mergeBase = 'MERGEBASE', reachable = true, shallow = true } = {}) {
   const calls = [];
   exec.exec = async (cmd, args, opts) => {
     calls.push([cmd, ...args]);
     if (args.includes('cat-file')) return reachable ? 0 : 128;
+    if (args.includes('--is-shallow-repository')) {
+      opts.listeners.stdout(Buffer.from(`${shallow}\n`));
+      return 0;
+    }
     if (args.includes('rev-parse')) {
       if (!parent) return 1;
       opts.listeners.stdout(Buffer.from(`${parent}\n`));
@@ -210,6 +215,7 @@ test('resolveDiffArgs: "true" on a push diffs before..sha through the merge-base
   const result = await resolveDiffArgs('true', workspace, tmp);
   assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
   assert.deepEqual(calls, [
+    ['git', '-C', workspace, 'rev-parse', '--is-shallow-repository'],
     ['git', '-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BEFORESHA'],
     ['git', '-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}'],
     ['git', '-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA'],
@@ -225,6 +231,7 @@ test('resolveDiffArgs: "true" on a push whose before is not in the checkout diff
   const result = await resolveDiffArgs('true', workspace, tmp);
   assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
   assert.deepEqual(calls, [
+    ['git', '-C', workspace, 'rev-parse', '--is-shallow-repository'],
     ['git', '-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BEFORESHA'],
     ['git', '-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}'],
     ['git', '-C', workspace, 'rev-parse', '--verify', '--quiet', 'PUSHSHA~1^{commit}'],
@@ -245,16 +252,53 @@ test('resolveEventRange: an unreachable before without a parent names both in th
     skipped:
       'this push has no previous tip (`before` BEFORESHA is not a commit in the checkout) and commit PUSHSHA ' +
       'has no parent in the checkout: it is a root commit, or the checkout is too shallow ' +
-      '(use actions/checkout with fetch-depth: 2 or more)',
+      '(use actions/checkout with fetch-depth: 0)',
   });
 });
 
-test('resolveDiffArgs: "true" on a push keeps before when its merge-base is unreachable', async () => {
+test('resolveDiffArgs: "true" on a push without a merge base diffs the commit against its parent, never the tips', async () => {
   github.context.eventName = 'push';
   github.context.payload = { before: 'BEFORESHA' };
   const calls = recordGit({ mergeBase: '' });
   await resolveDiffArgs('true', workspace, tmp);
-  assert.deepEqual(calls.at(-1), ['git', '-C', workspace, 'diff', '--unified=0', 'BEFORESHA', 'PUSHSHA']);
+  assert.deepEqual(calls.slice(-2), [
+    ['git', '-C', workspace, 'rev-parse', '--verify', '--quiet', 'PUSHSHA~1^{commit}'],
+    ['git', '-C', workspace, 'diff', '--unified=0', 'PARENTSHA', 'PUSHSHA'],
+  ]);
+  assert.deepEqual(warnings, [
+    "The push's previous tip BEFORESHA has no merge base with PUSHSHA in the checkout: the push rewrote " +
+      'history, or the checkout is shallow (use actions/checkout with fetch-depth: 0 to gate the whole pushed ' +
+      'range). Comparing PUSHSHA with its parent instead.',
+  ]);
+});
+
+test('resolveDiffArgs: "true" on a PR fetches the base with --depth=1 only in a shallow checkout', async () => {
+  github.context.payload = { pull_request: { base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
+  let calls = recordGit({ shallow: true });
+  await resolveDiffArgs('true', workspace, tmp);
+  assert.deepEqual(calls.slice(0, 3), [
+    ['git', '-C', workspace, 'rev-parse', '--is-shallow-repository'],
+    ['git', '-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BASESHA'],
+    ['git', '-C', workspace, 'merge-base', 'BASESHA', 'HEADSHA'],
+  ]);
+
+  calls = recordGit({ shallow: false });
+  await resolveDiffArgs('true', workspace, tmp);
+  assert.deepEqual(calls.slice(0, 3), [
+    ['git', '-C', workspace, 'rev-parse', '--is-shallow-repository'],
+    ['git', '-C', workspace, 'fetch', '--no-tags', 'origin', 'BASESHA'],
+    ['git', '-C', workspace, 'merge-base', 'BASESHA', 'HEADSHA'],
+  ]);
+});
+
+test('resolveDiffArgs: an unknown shallowness fetches without --depth', async () => {
+  github.context.payload = { pull_request: { base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
+  const calls = recordGit();
+  const real = exec.exec;
+  exec.exec = async (cmd, args, opts) =>
+    args.includes('--is-shallow-repository') ? (calls.push(args), 129) : real(cmd, args, opts);
+  await resolveDiffArgs('true', workspace, tmp);
+  assert.deepEqual(calls[1], ['git', '-C', workspace, 'fetch', '--no-tags', 'origin', 'BASESHA']);
 });
 
 test('resolveDiffArgs: "true" on a push with the all-zero before diffs the commit against its parent', async () => {
@@ -279,7 +323,7 @@ test('resolveDiffArgs: "true" on a push of a root commit warns why and analyzes 
   assert.deepEqual(warnings, [
     '`diff: true` did not scope this run: this push has no previous tip (`before` is the all-zero SHA) and ' +
       'commit PUSHSHA has no parent in the checkout: it is a root commit, or the checkout is too shallow ' +
-      '(use actions/checkout with fetch-depth: 2 or more). Analyzing the whole solution.',
+      '(use actions/checkout with fetch-depth: 0). Analyzing the whole solution.',
   ]);
   assert.equal(
     calls.some((c) => c.includes('diff')),
@@ -307,7 +351,7 @@ test('resolveEventRange: a pull request wins over the push fields', async () => 
   };
   const calls = recordGit();
   assert.deepEqual(await resolveEventRange(workspace), { base: 'MERGEBASE', head: 'HEADSHA' });
-  assert.deepEqual(calls[1], ['git', '-C', workspace, 'merge-base', 'BASESHA', 'HEADSHA']);
+  assert.deepEqual(calls[2], ['git', '-C', workspace, 'merge-base', 'BASESHA', 'HEADSHA']);
 });
 
 test('resolveEventRange: names an unknown event when the context has none', async () => {

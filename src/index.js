@@ -263,24 +263,36 @@ const ZERO_SHA = /^0+$/;
 
 /**
  * Determines the commits `diff: true` compares for the triggering event. This is
- * the single place both modes take their base and head from, so the analysis
- * (which diffs on the runner) and the coverage gate (which hands the CLI a ref
- * range) always look at the same changed lines:
- *   - pull_request: the PR's base and head.
- *   - push: the pushed range `before..sha`. When `before` is empty or the
- *     all-zero SHA (a newly created branch), the pushed commit against its
- *     parent (`sha~1..sha`).
- * For both, the base is replaced by the merge-base with the head when it is
- * reachable. That matches GitHub's "Files changed" on a PR, and on a push it
- * keeps a force-push that rewrote history from counting the dropped commits as
- * changes; on a fast-forward push the merge-base is `before` itself. It is also
- * exactly what the CLI does with a two-dot range, so the two modes agree.
+ * the single place both modes take their base and head from:
+ *   - pull_request: the PR's base and head, with the base replaced by their
+ *     merge-base when it is reachable (GitHub's "Files changed").
+ *   - push: the merge-base of `before` and the pushed sha, against the sha. On a
+ *     fast-forward push that merge-base is `before` itself; after a force push it
+ *     is the common ancestor, so the dropped commits are not counted as changes.
+ *     When no such range can be determined - `before` empty or the all-zero SHA
+ *     (a newly created branch), `before` not a commit in the checkout, or no
+ *     merge-base between the two (rewritten history the checkout cannot
+ *     connect, or a shallow checkout) - the pushed commit against its parent
+ *     (`sha~1..sha`), with a warning for the last two cases. Tips are never
+ *     compared directly on a push.
+ * A push range therefore always starts at an ancestor of the head, which is
+ * exactly what the CLI makes of a two-dot range (it diffs from the merge-base),
+ * so analyze mode (which diffs on the runner) and coverage mode (which hands the
+ * CLI the range) gate the same lines. One exception remains on pull requests:
+ * when their merge-base is not reachable, the base tip is used as is, which
+ * analyze mode diffs directly while the CLI cannot resolve it.
  * Returns `{ base, head }`, or `{ skipped }` with the reason no range exists
  * (the caller warns and falls back to the whole solution).
  */
 async function resolveEventRange(workspace) {
   const pr = github.context.payload.pull_request;
-  if (pr) return mergeBaseRange(workspace, pr.base?.sha, pr.head?.sha);
+  if (pr) {
+    const base = pr.base?.sha;
+    const head = pr.head?.sha;
+    await fetchBestEffort(workspace, base);
+    const mb = await gitCapture(['-C', workspace, 'merge-base', base, head]);
+    return { base: mb.code === 0 && mb.out ? mb.out : base, head };
+  }
   if (github.context.eventName !== 'push') {
     return {
       skipped: `only pull_request and push events have changed lines to compare, and this is a \`${
@@ -291,7 +303,8 @@ async function resolveEventRange(workspace) {
 
   const head = github.context.sha;
   const before = String(github.context.payload.before || '').trim();
-  let missing;
+  let missing; // why the pushed range is unusable, for the skip reason
+  let warning = ''; // said when the parent stands in for an unusable range
   if (!before) {
     missing = '`before` is empty';
   } else if (ZERO_SHA.test(before)) {
@@ -299,44 +312,49 @@ async function resolveEventRange(workspace) {
   } else {
     await fetchBestEffort(workspace, before);
     const reachable = await gitCapture(['-C', workspace, 'cat-file', '-e', `${before}^{commit}`]);
-    if (reachable.code === 0) return mergeBaseRange(workspace, before, head, { fetched: true });
-    // Typical after a force push: the old tip is gone from the remote, so no
-    // fetch depth brings it back. Comparing it would fail the run instead of
-    // gating the pushed change.
-    missing = `\`before\` ${before} is not a commit in the checkout`;
-    core.warning(
-      `The push's previous tip ${before} is not a commit in the checkout: the push rewrote history, or the ` +
-        `checkout does not contain it. Comparing ${head} with its parent instead.`
-    );
+    if (reachable.code !== 0) {
+      missing = `\`before\` ${before} is not a commit in the checkout`;
+      warning =
+        `The push's previous tip ${before} is not a commit in the checkout: the push rewrote history, or the ` +
+        'checkout does not contain it.';
+    } else {
+      const mb = await gitCapture(['-C', workspace, 'merge-base', before, head]);
+      if (mb.code === 0 && mb.out) return { base: mb.out, head };
+      missing = `\`before\` ${before} has no merge base with ${head} in the checkout`;
+      warning =
+        `The push's previous tip ${before} has no merge base with ${head} in the checkout: the push rewrote ` +
+        'history, or the checkout is shallow (use actions/checkout with fetch-depth: 0 to gate the whole ' +
+        'pushed range).';
+    }
   }
 
   // The parent is an ancestor of head by definition, so no merge-base step.
   const parent = await gitCapture(['-C', workspace, 'rev-parse', '--verify', '--quiet', `${head}~1^{commit}`]);
-  if (parent.code === 0 && parent.out) return { base: parent.out, head };
+  if (parent.code === 0 && parent.out) {
+    if (warning) core.warning(`${warning} Comparing ${head} with its parent instead.`);
+    return { base: parent.out, head };
+  }
   return {
     skipped:
       `this push has no previous tip (${missing}) and commit ${head} has no parent in the checkout: it is a ` +
-      'root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 2 or more)',
+      'root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 0)',
   };
 }
 
-/** Makes a commit available in a shallow checkout, best-effort. */
+/**
+ * Makes a commit available best-effort. Only a checkout that is already shallow
+ * is fetched with `--depth=1`: in a full clone that depth would graft the
+ * fetched commit as a parentless root, make the repository shallow and break
+ * every merge-base through it, so a full clone fetches the commit with its
+ * history instead.
+ */
 async function fetchBestEffort(workspace, sha) {
-  await exec.exec('git', ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', sha], {
+  const shallow = await gitCapture(['-C', workspace, 'rev-parse', '--is-shallow-repository']);
+  const depth = shallow.code === 0 && shallow.out === 'true' ? ['--depth=1'] : [];
+  await exec.exec('git', ['-C', workspace, 'fetch', '--no-tags', ...depth, 'origin', sha], {
     ignoreReturnCode: true,
     silent: true,
   });
-}
-
-/**
- * `{ base, head }` with the base replaced by the merge-base of the two when it
- * is reachable, otherwise the base itself (a shallow clone may lack the
- * merge-base).
- */
-async function mergeBaseRange(workspace, candidate, head, { fetched = false } = {}) {
-  if (!fetched) await fetchBestEffort(workspace, candidate);
-  const mb = await gitCapture(['-C', workspace, 'merge-base', candidate, head]);
-  return { base: mb.code === 0 && mb.out ? mb.out : candidate, head };
 }
 
 /**
@@ -721,7 +739,11 @@ function coverageSummary(report) {
     // Under a diff gate the CLI's `hasMetThreshold` carries the diff verdict, so
     // the whole-solution verdict (only reported then) is taken from its own
     // numbers instead.
-    met: diff ? percent !== null && required !== null && percent >= required : s.hasMetThreshold === true,
+    met: diff
+      ? percent !== null &&
+        required !== null &&
+        meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required)
+      : s.hasMetThreshold === true,
     regions: (report && report.uncoveredRegions) || [],
     projects: (report && report.testResults) || [],
     // Summed once here so the comment and the badge payload read the same
@@ -729,6 +751,23 @@ function coverageSummary(report) {
     testCounts: testCountsFor(report && report.testResults),
     diff,
   };
+}
+
+/**
+ * The CLI's own threshold decision: covered/total against the required percent,
+ * compared exactly (`covered * 100 >= required * total`) rather than through the
+ * floored display percent, with no measurable line counting as met. The required
+ * percent is scaled to an integer from its decimal notation so that, say,
+ * 19999 of 20000 lines meets 99.995 exactly as the CLI's decimal arithmetic
+ * says; a value without a plain decimal notation is compared in floating point.
+ */
+function meetsThreshold(covered, total, required) {
+  if (total === 0) return true;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(String(required));
+  if (!match) return covered * 100 >= required * total;
+  const fraction = match[2] || '';
+  const scale = 10n ** BigInt(fraction.length);
+  return BigInt(covered) * 100n * scale >= BigInt(match[1] + fraction) * BigInt(total);
 }
 
 /**
@@ -1925,6 +1964,7 @@ export {
   runCoverage,
   coverageSummary,
   diffCoverageSummary,
+  meetsThreshold,
   resolveEventRange,
   resolveCoverageGitRef,
   resolveCoverageDiffArgs,

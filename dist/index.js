@@ -70305,7 +70305,13 @@ async function gitCapture(args) {
 var ZERO_SHA = /^0+$/;
 async function resolveEventRange(workspace) {
   const pr = github.context.payload.pull_request;
-  if (pr) return mergeBaseRange(workspace, pr.base?.sha, pr.head?.sha);
+  if (pr) {
+    const base = pr.base?.sha;
+    const head2 = pr.head?.sha;
+    await fetchBestEffort(workspace, base);
+    const mb = await gitCapture(["-C", workspace, "merge-base", base, head2]);
+    return { base: mb.code === 0 && mb.out ? mb.out : base, head: head2 };
+  }
   if (github.context.eventName !== "push") {
     return {
       skipped: `only pull_request and push events have changed lines to compare, and this is a \`${github.context.eventName || "unknown"}\` event`
@@ -70314,6 +70320,7 @@ async function resolveEventRange(workspace) {
   const head = github.context.sha;
   const before = String(github.context.payload.before || "").trim();
   let missing;
+  let warning2 = "";
   if (!before) {
     missing = "`before` is empty";
   } else if (ZERO_SHA.test(before)) {
@@ -70321,28 +70328,32 @@ async function resolveEventRange(workspace) {
   } else {
     await fetchBestEffort(workspace, before);
     const reachable = await gitCapture(["-C", workspace, "cat-file", "-e", `${before}^{commit}`]);
-    if (reachable.code === 0) return mergeBaseRange(workspace, before, head, { fetched: true });
-    missing = `\`before\` ${before} is not a commit in the checkout`;
-    core.warning(
-      `The push's previous tip ${before} is not a commit in the checkout: the push rewrote history, or the checkout does not contain it. Comparing ${head} with its parent instead.`
-    );
+    if (reachable.code !== 0) {
+      missing = `\`before\` ${before} is not a commit in the checkout`;
+      warning2 = `The push's previous tip ${before} is not a commit in the checkout: the push rewrote history, or the checkout does not contain it.`;
+    } else {
+      const mb = await gitCapture(["-C", workspace, "merge-base", before, head]);
+      if (mb.code === 0 && mb.out) return { base: mb.out, head };
+      missing = `\`before\` ${before} has no merge base with ${head} in the checkout`;
+      warning2 = `The push's previous tip ${before} has no merge base with ${head} in the checkout: the push rewrote history, or the checkout is shallow (use actions/checkout with fetch-depth: 0 to gate the whole pushed range).`;
+    }
   }
   const parent = await gitCapture(["-C", workspace, "rev-parse", "--verify", "--quiet", `${head}~1^{commit}`]);
-  if (parent.code === 0 && parent.out) return { base: parent.out, head };
+  if (parent.code === 0 && parent.out) {
+    if (warning2) core.warning(`${warning2} Comparing ${head} with its parent instead.`);
+    return { base: parent.out, head };
+  }
   return {
-    skipped: `this push has no previous tip (${missing}) and commit ${head} has no parent in the checkout: it is a root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 2 or more)`
+    skipped: `this push has no previous tip (${missing}) and commit ${head} has no parent in the checkout: it is a root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 0)`
   };
 }
 async function fetchBestEffort(workspace, sha) {
-  await exec2.exec("git", ["-C", workspace, "fetch", "--no-tags", "--depth=1", "origin", sha], {
+  const shallow = await gitCapture(["-C", workspace, "rev-parse", "--is-shallow-repository"]);
+  const depth = shallow.code === 0 && shallow.out === "true" ? ["--depth=1"] : [];
+  await exec2.exec("git", ["-C", workspace, "fetch", "--no-tags", ...depth, "origin", sha], {
     ignoreReturnCode: true,
     silent: true
   });
-}
-async function mergeBaseRange(workspace, candidate, head, { fetched = false } = {}) {
-  if (!fetched) await fetchBestEffort(workspace, candidate);
-  const mb = await gitCapture(["-C", workspace, "merge-base", candidate, head]);
-  return { base: mb.code === 0 && mb.out ? mb.out : candidate, head };
 }
 async function resolveDiffArgs(diffInput, workspace, tmp) {
   const value = (diffInput || "").trim();
@@ -70614,7 +70625,7 @@ function coverageSummary(report) {
     // Under a diff gate the CLI's `hasMetThreshold` carries the diff verdict, so
     // the whole-solution verdict (only reported then) is taken from its own
     // numbers instead.
-    met: diff ? percent !== null && required !== null && percent >= required : s.hasMetThreshold === true,
+    met: diff ? percent !== null && required !== null && meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required) : s.hasMetThreshold === true,
     regions: report && report.uncoveredRegions || [],
     projects: report && report.testResults || [],
     // Summed once here so the comment and the badge payload read the same
@@ -70622,6 +70633,14 @@ function coverageSummary(report) {
     testCounts: testCountsFor(report && report.testResults),
     diff
   };
+}
+function meetsThreshold(covered, total, required) {
+  if (total === 0) return true;
+  const match2 = /^(\d+)(?:\.(\d+))?$/.exec(String(required));
+  if (!match2) return covered * 100 >= required * total;
+  const fraction = match2[2] || "";
+  const scale = 10n ** BigInt(fraction.length);
+  return BigInt(covered) * 100n * scale >= BigInt(match2[1] + fraction) * BigInt(total);
 }
 function diffCoverageSummary(d) {
   if (!d || typeof d !== "object") return null;
@@ -71444,6 +71463,7 @@ export {
   isMainModule,
   isPercentInput,
   locationLink,
+  meetsThreshold,
   minSeverityColor,
   obtainCli,
   projectFailed,

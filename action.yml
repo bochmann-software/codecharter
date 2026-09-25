@@ -61,13 +61,14 @@ inputs:
         - 'false' (default) — analyze the whole solution.
         - 'true' — the lines changed by the triggering event. On pull requests,
           the base branch against the head (merge-base..head). On pushes, the
-          pushed range (before..sha, from their merge-base); when `before` is
-          empty or all zeros (a new branch), or names a commit the checkout
-          does not contain (typically after a force push; with a warning), the
-          pushed commit against its parent (sha~1..sha). A push whose commit
-          has no parent in the
-          checkout (a root commit, or too shallow a clone) and any other event
-          type fall back to the whole solution with a warning.
+          merge-base of `before` and sha against sha, so a force push does not
+          count the commits it dropped (needs fetch-depth: 0). When `before` is
+          empty or all zeros (a new branch), or, with a warning, not in the
+          checkout or without a merge-base with sha (rewritten history, or a
+          shallow checkout), the pushed commit against its parent (sha~1..sha).
+          If that parent is missing too (a root commit, or a depth-1 checkout)
+          and on any other event type the run falls back to the whole solution
+          with a warning.
         - a git ref range, e.g. 'main..HEAD' or 'origin/main..HEAD'.
         - a path to a unified diff file in the repository (analyze mode only).
       In analyze mode both the reported findings and the fail-on gate apply only

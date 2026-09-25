@@ -26,28 +26,43 @@ the latest release in its line.
   `diff-coverage-covered-lines` and `diff-coverage-uncovered-regions`, empty
   when no changed-lines gate ran. A diff file in coverage mode, an invalid
   `min-diff-coverage`, and `min-diff-coverage` with `diff` off fail the step
-  with a message saying what to change, before the CLI is downloaded. Needs a CLI with changed-line coverage
-  (`version: latest` satisfies it). The `badge` payload keeps reporting
-  whole-solution coverage.
+  with a message saying what to change, before the CLI is downloaded. Needs a
+  CLI with changed-line coverage (`version: latest` satisfies it). The `badge`
+  payload keeps reporting whole-solution coverage.
 
 ### Changed
 
 - `diff: true` now also scopes runs triggered by a push, in both modes, instead
-  of falling back to the whole solution. A push is compared as `before..sha`
-  (from their merge-base, which on a fast-forward push is `before` itself); a
-  push that creates a branch, where `before` is empty or all zeros, compares
-  the pushed commit with its parent, and so does a push whose `before` is not
-  a commit in the checkout (typically a force push that rewrote history; a
-  warning names the missing commit). Workflows that set `diff: true` and also
-  run on `push` therefore now analyze (or gate) only the pushed changes; set
-  `diff` from an expression such as
-  `${{ github.event_name == 'pull_request' }}` to keep whole-solution runs on
-  push. A pushed root commit, or a checkout too shallow to hold the parent,
-  and every other event type still fall back to the whole solution; the
-  warning now names the reason or the event.
+  of falling back to the whole solution. A push is compared from the
+  merge-base of `before` and the pushed commit: on a fast-forward push that is
+  `before` itself, and after a force push it is the common ancestor, so the
+  dropped commits do not count as changes. This needs the history that
+  connects the two, so check out with `fetch-depth: 0`. Where no such range
+  exists the pushed commit is compared with its parent: silently for a push
+  that creates a branch (`before` empty or all zeros), and with a warning when
+  `before` is not a commit in the checkout or has no merge-base with the
+  pushed commit (rewritten history the checkout cannot connect, or a shallow
+  checkout; with the default `fetch-depth: 1` a multi-commit push is thus
+  gated on its last commit only). Tips are never compared directly. If the
+  parent is not in the checkout either (a root commit, or a depth-1 checkout),
+  the run falls back to the whole solution with a warning recommending
+  `fetch-depth: 0`, as does every other event type, with the event named.
+  Workflows that set `diff: true` and also run on `push` therefore now
+  analyze (or gate) only the pushed changes; set `diff` from an expression
+  such as `${{ github.event_name == 'pull_request' }}` to keep whole-solution
+  runs on push.
 - `coverage-met` reports the whole-solution verdict. Under a changed-lines gate
   the CLI's own report flag carries the changed-lines verdict, so the action
-  derives the whole-solution one from the reported percent and minimum.
+  derives the whole-solution one from the covered and measurable line counts
+  with the CLI's exact comparison (`covered × 100 ≥ required × total`, no
+  measurable line counting as met), not from the floored display percent.
+
+### Fixed
+
+- The best-effort fetch of the compared base commit (`diff: true`) used
+  `--depth=1` even in a full clone, which made the repository shallow, cut the
+  fetched commit off from its history and broke the merge-base. It now fetches
+  with `--depth=1` only when the checkout is already shallow.
 
 ## [1.9.2] - 2026-08-04
 
