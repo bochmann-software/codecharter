@@ -243,12 +243,89 @@ function hasConfiguredProfiles(workspace) {
   return false;
 }
 
+/** Runs a silent git command and captures its stdout; never throws on a non-zero exit. */
+async function gitCapture(args) {
+  let out = '';
+  const code = await exec.exec('git', args, {
+    ignoreReturnCode: true,
+    silent: true,
+    listeners: {
+      stdout: (d) => {
+        out += d.toString();
+      },
+    },
+  });
+  return { code, out: out.trim() };
+}
+
+/** `before` of a push that has no previous tip: a new branch, or a missing value. */
+const ZERO_SHA = /^0+$/;
+
+/**
+ * Determines the commits `diff: true` compares for the triggering event. This is
+ * the single place both modes take their base and head from, so the analysis
+ * (which diffs on the runner) and the coverage gate (which hands the CLI a ref
+ * range) always look at the same changed lines:
+ *   - pull_request: the PR's base and head.
+ *   - push: the pushed range `before..sha`. When `before` is empty or the
+ *     all-zero SHA (a newly created branch), the pushed commit against its
+ *     parent (`sha~1..sha`).
+ * For both, the base is replaced by the merge-base with the head when it is
+ * reachable. That matches GitHub's "Files changed" on a PR, and on a push it
+ * keeps a force-push that rewrote history from counting the dropped commits as
+ * changes; on a fast-forward push the merge-base is `before` itself. It is also
+ * exactly what the CLI does with a two-dot range, so the two modes agree.
+ * Returns `{ base, head }`, or `{ skipped }` with the reason no range exists
+ * (the caller warns and falls back to the whole solution).
+ */
+async function resolveEventRange(workspace) {
+  const pr = github.context.payload.pull_request;
+  let candidate;
+  let head;
+  if (pr) {
+    candidate = pr.base?.sha;
+    head = pr.head?.sha;
+  } else if (github.context.eventName === 'push') {
+    head = github.context.sha;
+    const before = String(github.context.payload.before || '').trim();
+    if (!before || ZERO_SHA.test(before)) {
+      // The parent is an ancestor of head by definition, so no merge-base step.
+      const parent = await gitCapture(['-C', workspace, 'rev-parse', '--verify', '--quiet', `${head}~1^{commit}`]);
+      if (parent.code === 0 && parent.out) return { base: parent.out, head };
+      return {
+        skipped:
+          `this push has no previous tip (\`before\` is ${before ? 'the all-zero SHA' : 'empty'}) and commit ` +
+          `${head} has no parent in the checkout: it is a root commit, or the checkout is too shallow ` +
+          '(use actions/checkout with fetch-depth: 2 or more)',
+      };
+    }
+    candidate = before;
+  } else {
+    return {
+      skipped: `only pull_request and push events have changed lines to compare, and this is a \`${
+        github.context.eventName || 'unknown'
+      }\` event`,
+    };
+  }
+
+  // Checkouts are often shallow; make the base commit available best-effort.
+  await exec.exec('git', ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', candidate], {
+    ignoreReturnCode: true,
+    silent: true,
+  });
+  // Prefer the merge-base; fall back to the base itself when the merge-base is
+  // not reachable in a shallow clone.
+  const mb = await gitCapture(['-C', workspace, 'merge-base', candidate, head]);
+  return { base: mb.code === 0 && mb.out ? mb.out : candidate, head };
+}
+
 /**
  * Resolves the `diff` input into CLI arguments that scope the analysis to
  * changed lines. The single input is interpreted by value:
  *   - '' / 'false'        -> no diff mode (returns []).
- *   - 'true'              -> on pull requests, diff against the base branch
- *                            (merge-base..head); ignored on other events.
+ *   - 'true'              -> the changed lines of the triggering pull request
+ *                            or push (see resolveEventRange); ignored on other
+ *                            events.
  *   - an existing file    -> used as a unified diff file as-is.
  *   - a value with '..'   -> treated as a git ref range (e.g. main..HEAD).
  * The diff is always computed on the runner (git is available, ownership is
@@ -266,33 +343,12 @@ async function resolveDiffArgs(diffInput, workspace, tmp) {
   // Reserved keywords are matched before any file/range interpretation, so a
   // file literally named "true"/"false" cannot hijack the mode.
   if (lower === 'true') {
-    const pr = github.context.payload.pull_request;
-    if (!pr) {
-      core.warning('`diff: true` only scopes analysis on pull_request events; analyzing the whole solution.');
+    const range = await resolveEventRange(workspace);
+    if (range.skipped) {
+      core.warning(`\`diff: true\` did not scope this run: ${range.skipped}. Analyzing the whole solution.`);
       return [];
     }
-    const baseSha = pr.base?.sha;
-    const headSha = pr.head?.sha;
-    // PR checkouts are often shallow; make the base commit available best-effort.
-    await exec.exec('git', ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', baseSha], {
-      ignoreReturnCode: true,
-      silent: true,
-    });
-    // Prefer the merge-base (matches GitHub's "Files changed"); fall back to the
-    // base tip when it is not reachable in a shallow clone.
-    let base = baseSha;
-    let mb = '';
-    const mbCode = await exec.exec('git', ['-C', workspace, 'merge-base', baseSha, headSha], {
-      ignoreReturnCode: true,
-      silent: true,
-      listeners: {
-        stdout: (d) => {
-          mb += d.toString();
-        },
-      },
-    });
-    if (mbCode === 0 && mb.trim()) base = mb.trim();
-    gitDiffArgs.push(base, headSha);
+    gitDiffArgs.push(range.base, range.head);
   } else {
     // An explicit value: a diff file path wins over a range interpretation, so a
     // path that contains '..' still resolves as a file rather than a git range.
@@ -336,6 +392,90 @@ async function resolveDiffArgs(diffInput, workspace, tmp) {
     core.warning('The resolved diff is empty; in diff mode that means nothing is analyzed.');
   }
   return ['--diff', diffFile];
+}
+
+/**
+ * Resolves the `diff` input for coverage mode, where the CLI takes a git ref
+ * range (`--git-ref`) rather than a diff file. Same values as analyze mode,
+ * except that a diff file is rejected:
+ *   - '' / 'false'        -> no diff gate: `{ gitRef: null, skipped: false }`.
+ *   - 'true'              -> `<base>..<head>` from resolveEventRange; on an event
+ *                            without a range it warns and returns
+ *                            `{ gitRef: null, skipped: true }`.
+ *   - a value with '..'   -> passed through as the range.
+ * Returns null when the input is invalid (a failure is already reported).
+ */
+async function resolveCoverageGitRef(diffInput, workspace) {
+  const value = (diffInput || '').trim();
+  const lower = value.toLowerCase();
+  if (!value || lower === 'false') return { gitRef: null, skipped: false };
+
+  if (lower === 'true') {
+    const range = await resolveEventRange(workspace);
+    if (range.skipped) {
+      core.warning(`\`diff: true\` did not scope this run: ${range.skipped}. Gating whole-solution coverage instead.`);
+      return { gitRef: null, skipped: true };
+    }
+    return { gitRef: `${range.base}..${range.head}`, skipped: false };
+  }
+
+  const asWorkspace = path.resolve(workspace, value);
+  if (fs.existsSync(asWorkspace) && fs.statSync(asWorkspace).isFile()) {
+    core.setFailed(
+      `\`diff\` points at the file "${value}", but coverage mode gates a git ref range, not a diff file. ` +
+        "What to do: set `diff: true` to gate the pull request's or push's changed lines, or pass a range " +
+        'such as `origin/main..HEAD`.'
+    );
+    return null;
+  }
+  if (value.includes('..')) return { gitRef: value, skipped: false };
+  core.setFailed(
+    `Invalid \`diff\` input "${value}" for coverage mode. Use 'true'/'false' or a git ref range (e.g. origin/main..HEAD).`
+  );
+  return null;
+}
+
+/** A percent input written locale-independently: digits, an optional `.` fraction, 0 to 100. */
+function isPercentInput(value) {
+  return /^\d+(\.\d+)?$/.test(value) && Number(value) <= 100;
+}
+
+/**
+ * Turns the coverage-mode `diff` and `min-diff-coverage` inputs into the CLI's
+ * diff-gate arguments. Returns an args array ([] when no diff gate runs), or
+ * null after reporting a configuration error. A `min-diff-coverage` without a
+ * range is an error when `diff` is off (the gate it asks for can never run), but
+ * only a warning when `diff: true` found no range on this event, since the same
+ * workflow gates changed lines on its pull requests and pushes.
+ */
+async function resolveCoverageDiffArgs(options, workspace) {
+  const minDiff = (options.minDiffCoverage || '').trim();
+  if (minDiff && !isPercentInput(minDiff)) {
+    core.setFailed(
+      `Invalid \`min-diff-coverage\` "${minDiff}". Use a number from 0 to 100 with a dot as the decimal ` +
+        'separator, e.g. `100` or `99.5`.'
+    );
+    return null;
+  }
+
+  const resolved = await resolveCoverageGitRef(options.diff, workspace);
+  if (resolved === null) return null;
+  if (!resolved.gitRef) {
+    if (minDiff && resolved.skipped) {
+      core.warning('`min-diff-coverage` is ignored because no diff gate runs on this event.');
+    } else if (minDiff) {
+      core.setFailed(
+        '`min-diff-coverage` is set, but `diff` is off, so there are no changed lines to gate. What to do: set ' +
+          '`diff: true` (or a git ref range) to gate the changed lines, or remove `min-diff-coverage`.'
+      );
+      return null;
+    }
+    return [];
+  }
+
+  const args = ['--git-ref', resolved.gitRef];
+  if (minDiff) args.push('--min-diff-coverage', minDiff);
+  return args;
 }
 
 /** Reads and parses a JSON file, or returns null if missing/invalid. */
@@ -536,18 +676,43 @@ function coverageSummary(report) {
   const s = (report && report.summary) || {};
   const percent = typeof s.percent === 'number' ? s.percent : null;
   const required = typeof s.minimumRequiredPercent === 'number' ? s.minimumRequiredPercent : null;
+  const diff = diffCoverageSummary(report && report.diffCoverage);
   return {
     total: Number(s.totalLines) || 0,
     covered: Number(s.coveredLines) || 0,
     percent,
     required,
     source: s.minimumRequiredPercentSource || 'default',
-    met: s.hasMetThreshold === true,
+    // Under a diff gate the CLI's `hasMetThreshold` carries the diff verdict, so
+    // the whole-solution verdict (only reported then) is taken from its own
+    // numbers instead.
+    met: diff ? percent !== null && required !== null && percent >= required : s.hasMetThreshold === true,
     regions: (report && report.uncoveredRegions) || [],
     projects: (report && report.testResults) || [],
     // Summed once here so the comment and the badge payload read the same
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
+    diff,
+  };
+}
+
+/**
+ * Flattens the report's `diffCoverage` section (present only when the CLI ran
+ * with `--git-ref`) into the numbers of the changed-lines gate, or null when
+ * no diff gate ran. `percent` is null when no measurable line changed; the gate
+ * then passes over zero lines, which the rendering states explicitly.
+ */
+function diffCoverageSummary(d) {
+  if (!d || typeof d !== 'object') return null;
+  return {
+    gitRef: typeof d.gitRef === 'string' ? d.gitRef : '',
+    changed: Number(d.measurableChangedLines) || 0,
+    covered: Number(d.coveredChangedLines) || 0,
+    percent: typeof d.percent === 'number' ? d.percent : null,
+    required: typeof d.requiredPercent === 'number' ? d.requiredPercent : null,
+    source: d.thresholdProvenance || 'default',
+    met: d.met === true,
+    regions: Array.isArray(d.uncoveredChangedRegions) ? d.uncoveredChangedRegions : [],
   };
 }
 
@@ -744,7 +909,7 @@ function buildCoverageComment(summary, workspace, opts) {
 
   // Everything around the test table is the same at every detail level, so it is
   // built once and only the table is re-rendered while looking for a fit.
-  const head = coverageHeadLines(summary, heading);
+  const head = [...coverageHeadLines(summary, heading), ...diffCoverageLines(summary.diff, workspace, opts)];
   const tail = coverageRegionLines(summary, workspace, opts);
 
   let markdown = '';
@@ -755,34 +920,77 @@ function buildCoverageComment(summary, workspace, opts) {
   return markdown;
 }
 
-/** Heading, coverage badges and the one-line coverage verdict. */
+/** A flat-square shields.io badge; label and message are URL-encoded. */
+function shieldBadge(alt, label, message, color) {
+  return `![${alt}](https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(message)}-${color}?style=flat-square)`;
+}
+
+/**
+ * Heading, coverage badges and the one-line coverage verdict. Under a diff gate
+ * the whole-solution numbers are only reported, which the line says, and a
+ * shortfall shows yellow rather than red because it does not decide the run.
+ */
 function coverageHeadLines(summary, heading) {
   const lines = [heading, ''];
   const shown = summary.percent.toFixed(2);
-  const color = summary.met ? 'brightgreen' : 'red';
-  let badges = `![coverage](https://img.shields.io/badge/coverage-${encodeURIComponent(`${shown}%`)}-${color}?style=flat-square)`;
+  const color = summary.met ? 'brightgreen' : summary.diff ? 'yellow' : 'red';
+  let badges = shieldBadge('coverage', 'coverage', `${shown}%`, color);
   if (summary.required !== null) {
-    badges += ` ![required](https://img.shields.io/badge/required-${encodeURIComponent(`${summary.required}%`)}-blue?style=flat-square)`;
+    badges += ` ${shieldBadge('required', 'required', `${summary.required}%`, 'blue')}`;
   }
   lines.push(badges, '');
+  const verdict = summary.diff ? '; whole solution reported only, the changed-lines gate decides this run' : '';
   lines.push(
-    `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`).`,
+    `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`${verdict}).`,
     ''
   );
   return lines;
 }
 
 /**
- * The uncovered regions grouped by file with linked locations, closed by the
- * footer stating the gate verdict. Mirrors the shape of the analysis comment so
- * both read alike.
+ * The changed-lines gate: its range, percent, required minimum, verdict and how
+ * many changed lines it measured, followed by the changed lines left uncovered.
+ * A gate over zero measurable lines passes by definition, so that case is named
+ * outright instead of showing a percentage it never computed. Empty without a
+ * diff gate.
  */
-function coverageRegionLines(summary, workspace, opts) {
-  const { repoFull, sha, failOnThreshold } = opts;
-  const lines = [];
+function diffCoverageLines(diff, workspace, opts) {
+  if (!diff) return [];
+  const lines = [`### Changed lines${diff.gitRef ? ` (\`${diff.gitRef}\`)` : ''}`, ''];
+  const required = diff.required === null ? '' : ` ${shieldBadge('required', 'required', `${diff.required}%`, 'blue')}`;
 
+  if (diff.changed === 0) {
+    lines.push(
+      `${shieldBadge('diff coverage', 'diff coverage', 'no changed lines', 'lightgrey')}${required}`,
+      '',
+      '**No measurable line changed**, so the changed-lines gate checked 0 lines and passed.',
+      ''
+    );
+    return lines;
+  }
+
+  const shown = diff.percent === null ? 'unknown' : `${diff.percent.toFixed(2)}%`;
+  lines.push(
+    `${shieldBadge('diff coverage', 'diff coverage', shown, diff.met ? 'brightgreen' : 'red')}${required}`,
+    ''
+  );
+  lines.push(
+    `${diff.covered} of ${diff.changed} changed measurable lines covered (threshold from \`${diff.source}\`): ` +
+      `**${diff.met ? 'met' : 'not met'}**.`,
+    ''
+  );
+  lines.push(...regionTableLines(diff.regions, workspace, opts, 'uncovered changed region(s)'));
+  return lines;
+}
+
+/**
+ * Uncovered regions grouped by file with linked locations, capped at
+ * MAX_COMMENT_ROWS rows. `label` names what the per-file count counts.
+ */
+function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
+  const lines = [];
   const byFile = new Map();
-  for (const region of summary.regions) {
+  for (const region of regionList) {
     const key = displayPath(region.relativeFile || region.file, workspace);
     if (!byFile.has(key)) byFile.set(key, []);
     byFile.get(key).push(region);
@@ -794,7 +1002,7 @@ function coverageRegionLines(summary, workspace, opts) {
     if (truncated) break;
     lines.push(
       '<details>',
-      `<summary>${file} (${regions.length} uncovered region(s))</summary>`,
+      `<summary>${file} (${regions.length} ${label})</summary>`,
       '',
       '| Lines | Method | Location |',
       '|-------|--------|----------|'
@@ -820,16 +1028,43 @@ function coverageRegionLines(summary, workspace, opts) {
   }
 
   if (truncated) {
-    lines.push(`_Showing the first ${MAX_COMMENT_ROWS} uncovered regions; the full report is in the job summary._`, '');
+    lines.push(
+      `_Showing the first ${MAX_COMMENT_ROWS} ${label.replace('(s)', 's')}; the full report is in the job summary._`,
+      ''
+    );
   }
-
-  lines.push('---');
-  lines.push(coverageFooterLine(summary, failOnThreshold));
   return lines;
 }
 
-/** Footer stating whether the run blocks the merge and what to do about it. */
+/**
+ * The whole-solution uncovered regions, closed by the footer stating the gate
+ * verdict. Mirrors the shape of the analysis comment so both read alike.
+ */
+function coverageRegionLines(summary, workspace, opts) {
+  const lines = regionTableLines(summary.regions, workspace, opts, 'uncovered region(s)');
+  lines.push('---');
+  lines.push(coverageFooterLine(summary, opts.failOnThreshold));
+  return lines;
+}
+
+/**
+ * Footer stating whether the run blocks the merge and what to do about it. It
+ * speaks for the gate that decides the exit code: the changed-lines gate when
+ * one ran, otherwise the whole-solution gate.
+ */
 function coverageFooterLine(summary, failOnThreshold) {
+  const diff = summary.diff;
+  if (diff) {
+    if (diff.met) {
+      return diff.changed === 0
+        ? '_The changed-lines gate passed without a measurable changed line to check._'
+        : '_Changed lines meet the required minimum._';
+    }
+    if (!failOnThreshold) {
+      return '_Changed-line coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._';
+    }
+    return '_Cover the changed lines listed above before merging, or lower `min-diff-coverage`._';
+  }
   if (summary.met) return '_Coverage meets the required minimum._';
   if (!failOnThreshold) {
     return '_Coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._';
@@ -837,19 +1072,29 @@ function coverageFooterLine(summary, failOnThreshold) {
   return '_Cover the regions above before merging, or lower `coverage.minimum-percent` in `.codecharter/config.yml`._';
 }
 
-/** Maps a coverage exit code to a check-run conclusion. */
+/**
+ * Maps a coverage exit code to a check-run conclusion. Exit code 1 means "below
+ * the threshold" for whichever gate decided the run (the changed-lines gate when
+ * one ran), so `fail-on-threshold: false` softens both alike.
+ */
 function coverageConclusion(exitCode, failOnThreshold) {
   if (exitCode === 0) return 'success';
   if (exitCode === 1) return failOnThreshold ? 'failure' : 'neutral';
   return 'failure';
 }
 
-/** One-line check-run title for a coverage run. */
+/** One-line check-run title for a coverage run, naming the gate that decided it. */
 function coverageTitle(exitCode, summary) {
   if (exitCode === 2) return 'Tests failed or coverage was incomplete';
   if (exitCode === 3) return 'No coverage data';
   if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
   if (summary.percent === null) return 'No coverage data';
+  const diff = summary.diff;
+  if (diff) {
+    if (diff.changed === 0) return 'Diff coverage: no measurable changed lines (gate passed over 0 lines)';
+    const shownDiff = `${diff.percent === null ? 'unknown' : `${diff.percent.toFixed(2)}%`} (${diff.covered}/${diff.changed} changed lines)`;
+    return diff.met ? `Diff coverage ${shownDiff}` : `Diff coverage ${shownDiff} is below the required minimum`;
+  }
   const shown = `${summary.percent.toFixed(2)}%`;
   return summary.met ? `Coverage ${shown}` : `Coverage ${shown} is below the required minimum`;
 }
@@ -1106,6 +1351,11 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
 async function runCoverage(ctx) {
   const { exe, env, workspace, tmp, portal, apiKey, options } = ctx;
 
+  // Resolved before anything runs, so a misconfigured diff gate fails fast
+  // instead of after a full test run.
+  const diffArgs = await resolveCoverageDiffArgs(options, workspace);
+  if (diffArgs === null) return;
+
   const jsonPath = options.reportOutput
     ? path.resolve(workspace, options.reportOutput)
     : path.join(tmp, 'coverage.json');
@@ -1113,6 +1363,7 @@ async function runCoverage(ctx) {
   if (options.minCoverage) args.push('--min-coverage', options.minCoverage);
   if (options.skipTests) args.push('--skip-tests');
   if (options.resultsRoot) args.push('--results-root', path.resolve(workspace, options.resultsRoot));
+  args.push(...diffArgs);
 
   const hasDotnet = (await io.which('dotnet', false)) || process.env.DOTNET_ROOT;
   if (!hasDotnet) {
@@ -1130,6 +1381,16 @@ async function runCoverage(ctx) {
   core.setOutput('coverage-met', String(summary.met));
   core.setOutput('coverage-uncovered-regions', summary.regions.length);
   if (options.reportOutput) core.setOutput('coverage-report-path', jsonPath);
+  setDiffCoverageOutputs(summary.diff);
+  if (diffArgs.length > 0 && report && !summary.diff && (code === 0 || code === 1)) {
+    // Without the section the result cannot show how many changed lines were
+    // checked, so the verdict must not pass silently as a diff gate.
+    core.warning(
+      'A changed-lines gate was requested (`--git-ref`), but the coverage report has no `diffCoverage` section, ' +
+        'so the result below is the whole-solution gate. What to do: use a CLI with changed-line coverage ' +
+        'support (`version: latest`).'
+    );
+  }
 
   const repoFull = process.env.GITHUB_REPOSITORY || `${github.context.repo.owner}/${github.context.repo.repo}`;
   const sha = github.context.payload.pull_request?.head?.sha || github.context.sha;
@@ -1170,6 +1431,21 @@ async function runCoverage(ctx) {
   }
 
   if (code === 0) return;
+  if (code === 1 && summary.diff) {
+    const d = summary.diff;
+    const detail =
+      `Changed-line coverage is ${d.percent === null ? 'unknown' : `${d.percent.toFixed(2)}%`} ` +
+      `(${d.covered} of ${d.changed} changed lines), below the required ${d.required ?? 100}% ` +
+      `(threshold from \`${d.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(
+        `${detail} What to do: cover the changed lines listed above, or pass a lower \`min-diff-coverage\`.`
+      );
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
   if (code === 1) {
     const detail =
       `Coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, below the required ` +
@@ -1201,8 +1477,25 @@ async function runCoverage(ctx) {
   core.setFailed(
     `The coverage run could not start (exit code ${code === null ? 'null (process terminated)' : code}). ` +
       'Common causes are a missing .NET SDK, an unwritable report path, or an invalid `.codecharter` config. ' +
+      (diffArgs.length > 0
+        ? 'The changed-lines gate (`diff`) also needs a CLI that supports `coverage --git-ref` (`version: latest`) ' +
+          'and the compared commits in the checkout (`actions/checkout` with `fetch-depth: 0`). '
+        : '') +
       'Check the messages above.'
   );
+}
+
+/**
+ * Publishes the changed-lines gate as step outputs. All of them are empty when
+ * no diff gate ran; after a gate over zero changed lines the percent stays
+ * empty while the line counts say 0, so the reach of the gate is visible.
+ */
+function setDiffCoverageOutputs(diff) {
+  core.setOutput('diff-coverage-percent', diff && diff.percent !== null ? diff.percent : '');
+  core.setOutput('diff-coverage-met', diff ? String(diff.met) : '');
+  core.setOutput('diff-coverage-changed-lines', diff ? diff.changed : '');
+  core.setOutput('diff-coverage-covered-lines', diff ? diff.covered : '');
+  core.setOutput('diff-coverage-uncovered-regions', diff ? diff.regions.length : '');
 }
 
 async function run() {
@@ -1306,6 +1599,8 @@ async function run() {
         options: {
           root: core.getInput('coverage-root'),
           minCoverage: core.getInput('min-coverage'),
+          diff: diffInput,
+          minDiffCoverage: core.getInput('min-diff-coverage'),
           skipTests: (core.getInput('skip-tests') || 'false').toLowerCase() === 'true',
           resultsRoot: core.getInput('results-root'),
           failOnThreshold: (core.getInput('fail-on-threshold') || 'true').toLowerCase() !== 'false',
@@ -1589,6 +1884,11 @@ export {
   run,
   runCoverage,
   coverageSummary,
+  diffCoverageSummary,
+  resolveEventRange,
+  resolveCoverageGitRef,
+  resolveCoverageDiffArgs,
+  isPercentInput,
   testCountsFor,
   testTableRows,
   projectFailed,

@@ -7,6 +7,46 @@ the latest release in its line.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-25
+
+### Added
+
+- Coverage mode gates changed lines. It now honours the `diff` input: `true`
+  gates the lines changed by the pull request or push, and a git ref range
+  (e.g. `origin/main..HEAD`) gates that range. The new `min-diff-coverage`
+  input sets the minimum for those lines (without it the effective
+  `min-coverage` applies). The changed-lines gate alone decides the step, the
+  check conclusion and its title; whole-solution coverage is still shown but
+  only reported, and `fail-on-threshold: false` softens the changed-lines gate
+  the same way it softens the whole-solution one. The summary and comment gain
+  a "Changed lines" block with the percent, the minimum, the verdict, how many
+  changed measurable lines were checked and covered (a range without any says
+  so explicitly), and the uncovered changed regions. New outputs
+  `diff-coverage-percent`, `diff-coverage-met`, `diff-coverage-changed-lines`,
+  `diff-coverage-covered-lines` and `diff-coverage-uncovered-regions`, empty
+  when no changed-lines gate ran. A diff file in coverage mode, an invalid
+  `min-diff-coverage`, and `min-diff-coverage` with `diff` off fail the step
+  with a message saying what to change. Needs a CLI with changed-line coverage
+  (`version: latest` satisfies it). The `badge` payload keeps reporting
+  whole-solution coverage.
+
+### Changed
+
+- `diff: true` now also scopes runs triggered by a push, in both modes, instead
+  of falling back to the whole solution. A push is compared as `before..sha`
+  (from their merge-base, which on a fast-forward push is `before` itself); a
+  push that creates a branch, where `before` is empty or all zeros, compares
+  the pushed commit with its parent. Workflows that set `diff: true` and also
+  run on `push` therefore now analyze (or gate) only the pushed changes; set
+  `diff` from an expression such as
+  `${{ github.event_name == 'pull_request' }}` to keep whole-solution runs on
+  push. A pushed root commit, or a checkout too shallow to hold the parent,
+  and every other event type still fall back to the whole solution; the
+  warning now names the reason or the event.
+- `coverage-met` reports the whole-solution verdict. Under a changed-lines gate
+  the CLI's own report flag carries the changed-lines verdict, so the action
+  derives the whole-solution one from the reported percent and minimum.
+
 ## [1.9.2] - 2026-08-04
 
 ### Changed
@@ -123,7 +163,8 @@ the latest release in its line.
 See the [GitHub Releases](https://github.com/bochmann-software/codeguard/releases)
 page for the history of the `1.6.x` and earlier lines.
 
-[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.9.2...HEAD
+[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/bochmann-software/codeguard/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/bochmann-software/codeguard/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/bochmann-software/codeguard/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/bochmann-software/codeguard/compare/v1.8.0...v1.9.0
