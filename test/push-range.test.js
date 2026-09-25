@@ -29,8 +29,9 @@ let root;
 let originUrl;
 const sha = {};
 
-// origin: main is A-B-C-D; branch `forced` is B-F, the state after a force push
-// that replaced C and D with F. uploadpack.allowAnySHA1InWant lets a clone fetch
+// origin: main is A-B-C-D; branch `forced` is A-B-E-F, the state after a force
+// push that replaced C and D with two new commits, so the parent of F is not the
+// merge-base and a parent fallback would show. uploadpack.allowAnySHA1InWant lets a clone fetch
 // the old tip D by SHA, as GitHub does for a force-pushed commit.
 before(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-push-range-'));
@@ -46,6 +47,7 @@ before(() => {
   };
   for (const name of ['A', 'B', 'C', 'D']) sha[name] = commit(name);
   git(origin, 'checkout', '-q', '-b', 'forced', sha.B);
+  sha.E = commit('E');
   sha.F = commit('F');
   git(origin, 'checkout', '-q', 'main');
   originUrl = pathToFileURL(origin).href;
