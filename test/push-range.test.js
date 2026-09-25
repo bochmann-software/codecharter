@@ -15,7 +15,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-import { core, exec, github } from '../src/deps.js';
+import { core, exec, github, HttpClient } from '../src/deps.js';
 import { resolveDiffArgs, resolveCoverageGitRef, resolveCoverageDiffArgs, runCoverage } from '../src/index.js';
 
 const git = (cwd, ...args) =>
@@ -199,10 +199,25 @@ function pullRequest() {
   github.context.payload = { pull_request: { number: 1, base: { sha: sha.D }, head: { sha: sha.F } } };
 }
 
-test('pull request, shallow depth 1: coverage fails before any test run, analyze still diffs the tips', async () => {
+test('pull request, shallow depth 1: coverage fails before any test run, analyze still diffs the tips', async (t) => {
   pullRequest();
   const failures = [];
   core.setFailed = (m) => failures.push(m);
+  // Enough of an environment for runCoverage to finish if it wrongly went on to
+  // run the CLI, so a regression shows up in the assertions below rather than
+  // as an unrelated crash.
+  const savedRepo = process.env.GITHUB_REPOSITORY;
+  const savedPost = HttpClient.prototype.post;
+  const savedOutput = core.setOutput;
+  process.env.GITHUB_REPOSITORY = 'acme/app';
+  HttpClient.prototype.post = async () => ({ message: { statusCode: 404 }, readBody: async () => '' });
+  core.setOutput = () => {};
+  t.after(() => {
+    if (savedRepo === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = savedRepo;
+    HttpClient.prototype.post = savedPost;
+    core.setOutput = savedOutput;
+  });
 
   const coverageDir = clone('--depth', '1', '--branch', 'forced');
   await runCoverage({
