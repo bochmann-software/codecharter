@@ -26,6 +26,7 @@ import { core, exec, github } from '../src/deps.js';
 import {
   resolveCoverageGitRef,
   resolveCoverageDiffArgs,
+  validateCoverageDiffInputs,
   isPercentInput,
   diffCoverageSummary,
   coverageSummary,
@@ -49,6 +50,7 @@ const OPTS = { repoFull: 'acme/app', sha: 'abc', failOnThreshold: true, exitCode
 let warnings;
 let failures;
 let gitCalls;
+let reachable;
 let saved;
 let workspace;
 
@@ -56,6 +58,7 @@ beforeEach(() => {
   warnings = [];
   failures = [];
   gitCalls = [];
+  reachable = true;
   saved = {
     warning: core.warning,
     setFailed: core.setFailed,
@@ -71,6 +74,7 @@ beforeEach(() => {
   github.context.sha = 'PUSHSHA';
   exec.exec = async (cmd, args, opts) => {
     gitCalls.push([cmd, ...args]);
+    if (args.includes('cat-file')) return reachable ? 0 : 128;
     if (args.includes('merge-base')) {
       opts.listeners.stdout(Buffer.from('MERGEBASE\n'));
       return 0;
@@ -119,7 +123,19 @@ test('resolveCoverageGitRef: "true" on a push is the pushed range', async () => 
   github.context.eventName = 'push';
   github.context.payload = { before: 'BEFORESHA' };
   assert.deepEqual(await resolveCoverageGitRef('true', workspace), { gitRef: 'MERGEBASE..PUSHSHA', skipped: false });
-  assert.deepEqual(gitCalls[1], ['git', '-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA']);
+  assert.deepEqual(gitCalls[1], ['git', '-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}']);
+  assert.deepEqual(gitCalls[2], ['git', '-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA']);
+});
+
+test('resolveCoverageGitRef: "true" on a push whose before is not in the checkout is parent..sha', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA' };
+  reachable = false;
+  assert.deepEqual(await resolveCoverageGitRef('true', workspace), { gitRef: 'PARENTSHA..PUSHSHA', skipped: false });
+  assert.deepEqual(warnings, [
+    "The push's previous tip BEFORESHA is not a commit in the checkout: the push rewrote history, or the " +
+      'checkout does not contain it. Comparing PUSHSHA with its parent instead.',
+  ]);
 });
 
 test('resolveCoverageGitRef: "true" on a push with the all-zero before is parent..sha', async () => {
@@ -145,9 +161,9 @@ test('resolveCoverageGitRef: an explicit range is passed through unchanged', asy
   assert.deepEqual(gitCalls, [], 'the CLI computes the diff for a range itself');
 });
 
-test('resolveCoverageGitRef: a diff file is rejected with the fix', async () => {
+test('validateCoverageDiffInputs: a diff file is rejected with the fix', () => {
   fs.writeFileSync(path.join(workspace, 'changes..diff'), 'patch');
-  assert.equal(await resolveCoverageGitRef('changes..diff', workspace), null);
+  assert.equal(validateCoverageDiffInputs('changes..diff', '', workspace), false);
   assert.deepEqual(failures, [
     '`diff` points at the file "changes..diff", but coverage mode gates a git ref range, not a diff file. ' +
       "What to do: set `diff: true` to gate the pull request's or push's changed lines, or pass a range " +
@@ -155,8 +171,8 @@ test('resolveCoverageGitRef: a diff file is rejected with the fix', async () => 
   ]);
 });
 
-test('resolveCoverageGitRef: a value that is neither keyword nor range is rejected', async () => {
-  assert.equal(await resolveCoverageGitRef('main', workspace), null);
+test('validateCoverageDiffInputs: a value that is neither keyword nor range is rejected', () => {
+  assert.equal(validateCoverageDiffInputs('main', '', workspace), false);
   assert.deepEqual(failures, [
     "Invalid `diff` input \"main\" for coverage mode. Use 'true'/'false' or a git ref range (e.g. origin/main..HEAD).",
   ]);
@@ -393,4 +409,12 @@ test('coverageTitle names the diff gate when it decided the run', () => {
   const unknown = coverageSummary({ ...fixture(BELOW), diffCoverage: { measurableChangedLines: 1 } });
   assert.equal(coverageTitle(1, unknown), 'Diff coverage unknown (0/1 changed lines) is below the required minimum');
   assert.equal(coverageTitle(2, coverageSummary(fixture(BELOW))), 'Tests failed or coverage was incomplete');
+});
+
+test('validateCoverageDiffInputs: usable inputs pass without touching git', () => {
+  assert.equal(validateCoverageDiffInputs('', '', workspace), true);
+  assert.equal(validateCoverageDiffInputs('true', '100', workspace), true);
+  assert.equal(validateCoverageDiffInputs('origin/main..HEAD', '99.5', workspace), true);
+  assert.deepEqual(failures, []);
+  assert.deepEqual(gitCalls, []);
 });

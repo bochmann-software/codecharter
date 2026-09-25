@@ -280,27 +280,8 @@ const ZERO_SHA = /^0+$/;
  */
 async function resolveEventRange(workspace) {
   const pr = github.context.payload.pull_request;
-  let candidate;
-  let head;
-  if (pr) {
-    candidate = pr.base?.sha;
-    head = pr.head?.sha;
-  } else if (github.context.eventName === 'push') {
-    head = github.context.sha;
-    const before = String(github.context.payload.before || '').trim();
-    if (!before || ZERO_SHA.test(before)) {
-      // The parent is an ancestor of head by definition, so no merge-base step.
-      const parent = await gitCapture(['-C', workspace, 'rev-parse', '--verify', '--quiet', `${head}~1^{commit}`]);
-      if (parent.code === 0 && parent.out) return { base: parent.out, head };
-      return {
-        skipped:
-          `this push has no previous tip (\`before\` is ${before ? 'the all-zero SHA' : 'empty'}) and commit ` +
-          `${head} has no parent in the checkout: it is a root commit, or the checkout is too shallow ` +
-          '(use actions/checkout with fetch-depth: 2 or more)',
-      };
-    }
-    candidate = before;
-  } else {
+  if (pr) return mergeBaseRange(workspace, pr.base?.sha, pr.head?.sha);
+  if (github.context.eventName !== 'push') {
     return {
       skipped: `only pull_request and push events have changed lines to compare, and this is a \`${
         github.context.eventName || 'unknown'
@@ -308,13 +289,52 @@ async function resolveEventRange(workspace) {
     };
   }
 
-  // Checkouts are often shallow; make the base commit available best-effort.
-  await exec.exec('git', ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', candidate], {
+  const head = github.context.sha;
+  const before = String(github.context.payload.before || '').trim();
+  let missing;
+  if (!before) {
+    missing = '`before` is empty';
+  } else if (ZERO_SHA.test(before)) {
+    missing = '`before` is the all-zero SHA';
+  } else {
+    await fetchBestEffort(workspace, before);
+    const reachable = await gitCapture(['-C', workspace, 'cat-file', '-e', `${before}^{commit}`]);
+    if (reachable.code === 0) return mergeBaseRange(workspace, before, head, { fetched: true });
+    // Typical after a force push: the old tip is gone from the remote, so no
+    // fetch depth brings it back. Comparing it would fail the run instead of
+    // gating the pushed change.
+    missing = `\`before\` ${before} is not a commit in the checkout`;
+    core.warning(
+      `The push's previous tip ${before} is not a commit in the checkout: the push rewrote history, or the ` +
+        `checkout does not contain it. Comparing ${head} with its parent instead.`
+    );
+  }
+
+  // The parent is an ancestor of head by definition, so no merge-base step.
+  const parent = await gitCapture(['-C', workspace, 'rev-parse', '--verify', '--quiet', `${head}~1^{commit}`]);
+  if (parent.code === 0 && parent.out) return { base: parent.out, head };
+  return {
+    skipped:
+      `this push has no previous tip (${missing}) and commit ${head} has no parent in the checkout: it is a ` +
+      'root commit, or the checkout is too shallow (use actions/checkout with fetch-depth: 2 or more)',
+  };
+}
+
+/** Makes a commit available in a shallow checkout, best-effort. */
+async function fetchBestEffort(workspace, sha) {
+  await exec.exec('git', ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', sha], {
     ignoreReturnCode: true,
     silent: true,
   });
-  // Prefer the merge-base; fall back to the base itself when the merge-base is
-  // not reachable in a shallow clone.
+}
+
+/**
+ * `{ base, head }` with the base replaced by the merge-base of the two when it
+ * is reachable, otherwise the base itself (a shallow clone may lack the
+ * merge-base).
+ */
+async function mergeBaseRange(workspace, candidate, head, { fetched = false } = {}) {
+  if (!fetched) await fetchBestEffort(workspace, candidate);
   const mb = await gitCapture(['-C', workspace, 'merge-base', candidate, head]);
   return { base: mb.code === 0 && mb.out ? mb.out : candidate, head };
 }
@@ -395,29 +415,35 @@ async function resolveDiffArgs(diffInput, workspace, tmp) {
 }
 
 /**
- * Resolves the `diff` input for coverage mode, where the CLI takes a git ref
- * range (`--git-ref`) rather than a diff file. Same values as analyze mode,
- * except that a diff file is rejected:
- *   - '' / 'false'        -> no diff gate: `{ gitRef: null, skipped: false }`.
- *   - 'true'              -> `<base>..<head>` from resolveEventRange; on an event
- *                            without a range it warns and returns
- *                            `{ gitRef: null, skipped: true }`.
- *   - a value with '..'   -> passed through as the range.
- * Returns null when the input is invalid (a failure is already reported).
+ * Checks the coverage-mode `diff` and `min-diff-coverage` inputs without
+ * touching git or the network, so a configuration error fails the step before
+ * the CLI is downloaded. Rejects an invalid `min-diff-coverage`, a diff file
+ * (the coverage verb gates a ref range, not a file), a value that is neither
+ * keyword nor range, and `min-diff-coverage` while `diff` is off (the gate it
+ * asks for could never run). Returns true when the inputs are usable; otherwise
+ * reports the failure and returns false.
  */
-async function resolveCoverageGitRef(diffInput, workspace) {
+function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
+  const minDiff = (minDiffInput || '').trim();
+  if (minDiff && !isPercentInput(minDiff)) {
+    core.setFailed(
+      `Invalid \`min-diff-coverage\` "${minDiff}". Use a number from 0 to 100 with a dot as the decimal ` +
+        'separator, e.g. `100` or `99.5`.'
+    );
+    return false;
+  }
+
   const value = (diffInput || '').trim();
   const lower = value.toLowerCase();
-  if (!value || lower === 'false') return { gitRef: null, skipped: false };
-
-  if (lower === 'true') {
-    const range = await resolveEventRange(workspace);
-    if (range.skipped) {
-      core.warning(`\`diff: true\` did not scope this run: ${range.skipped}. Gating whole-solution coverage instead.`);
-      return { gitRef: null, skipped: true };
-    }
-    return { gitRef: `${range.base}..${range.head}`, skipped: false };
+  if (!value || lower === 'false') {
+    if (!minDiff) return true;
+    core.setFailed(
+      '`min-diff-coverage` is set, but `diff` is off, so there are no changed lines to gate. What to do: set ' +
+        '`diff: true` (or a git ref range) to gate the changed lines, or remove `min-diff-coverage`.'
+    );
+    return false;
   }
+  if (lower === 'true') return true;
 
   const asWorkspace = path.resolve(workspace, value);
   if (fs.existsSync(asWorkspace) && fs.statSync(asWorkspace).isFile()) {
@@ -426,13 +452,36 @@ async function resolveCoverageGitRef(diffInput, workspace) {
         "What to do: set `diff: true` to gate the pull request's or push's changed lines, or pass a range " +
         'such as `origin/main..HEAD`.'
     );
-    return null;
+    return false;
   }
-  if (value.includes('..')) return { gitRef: value, skipped: false };
+  if (value.includes('..')) return true;
   core.setFailed(
     `Invalid \`diff\` input "${value}" for coverage mode. Use 'true'/'false' or a git ref range (e.g. origin/main..HEAD).`
   );
-  return null;
+  return false;
+}
+
+/**
+ * Resolves a validated coverage-mode `diff` input into the ref range the CLI
+ * gates (`--git-ref`):
+ *   - '' / 'false'        -> no diff gate: `{ gitRef: null, skipped: false }`.
+ *   - 'true'              -> `<base>..<head>` from resolveEventRange; on an event
+ *                            without a range it warns and returns
+ *                            `{ gitRef: null, skipped: true }`.
+ *   - a range             -> passed through unchanged.
+ */
+async function resolveCoverageGitRef(diffInput, workspace) {
+  const value = (diffInput || '').trim();
+  const lower = value.toLowerCase();
+  if (!value || lower === 'false') return { gitRef: null, skipped: false };
+  if (lower !== 'true') return { gitRef: value, skipped: false };
+
+  const range = await resolveEventRange(workspace);
+  if (range.skipped) {
+    core.warning(`\`diff: true\` did not scope this run: ${range.skipped}. Gating whole-solution coverage instead.`);
+    return { gitRef: null, skipped: true };
+  }
+  return { gitRef: `${range.base}..${range.head}`, skipped: false };
 }
 
 /** A percent input written locale-independently: digits, an optional `.` fraction, 0 to 100. */
@@ -443,33 +492,19 @@ function isPercentInput(value) {
 /**
  * Turns the coverage-mode `diff` and `min-diff-coverage` inputs into the CLI's
  * diff-gate arguments. Returns an args array ([] when no diff gate runs), or
- * null after reporting a configuration error. A `min-diff-coverage` without a
- * range is an error when `diff` is off (the gate it asks for can never run), but
- * only a warning when `diff: true` found no range on this event, since the same
- * workflow gates changed lines on its pull requests and pushes.
+ * null after reporting a configuration error (see validateCoverageDiffInputs;
+ * run() already checked before the download, this keeps runCoverage safe on
+ * its own). A `min-diff-coverage` on an event where `diff: true` finds no range
+ * is only a warning, since the same workflow gates changed lines on its pull
+ * requests and pushes.
  */
 async function resolveCoverageDiffArgs(options, workspace) {
+  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace)) return null;
   const minDiff = (options.minDiffCoverage || '').trim();
-  if (minDiff && !isPercentInput(minDiff)) {
-    core.setFailed(
-      `Invalid \`min-diff-coverage\` "${minDiff}". Use a number from 0 to 100 with a dot as the decimal ` +
-        'separator, e.g. `100` or `99.5`.'
-    );
-    return null;
-  }
 
   const resolved = await resolveCoverageGitRef(options.diff, workspace);
-  if (resolved === null) return null;
   if (!resolved.gitRef) {
-    if (minDiff && resolved.skipped) {
-      core.warning('`min-diff-coverage` is ignored because no diff gate runs on this event.');
-    } else if (minDiff) {
-      core.setFailed(
-        '`min-diff-coverage` is set, but `diff` is off, so there are no changed lines to gate. What to do: set ' +
-          '`diff: true` (or a git ref range) to gate the changed lines, or remove `min-diff-coverage`.'
-      );
-      return null;
-    }
+    if (minDiff) core.warning('`min-diff-coverage` is ignored because no diff gate runs on this event.');
     return [];
   }
 
@@ -1557,6 +1592,11 @@ async function run() {
     core.info(`Auto-discovered solution: ${solution}`);
   }
 
+  // A misconfigured changed-lines gate fails here, before the CLI download.
+  if (mode === 'coverage' && !validateCoverageDiffInputs(diffInput, core.getInput('min-diff-coverage'), workspace)) {
+    return;
+  }
+
   // Everything lives under one temp dir so the binary and the short-lived
   // license are removed together in finally, on every exit path.
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codecharter-'));
@@ -1888,6 +1928,7 @@ export {
   resolveEventRange,
   resolveCoverageGitRef,
   resolveCoverageDiffArgs,
+  validateCoverageDiffInputs,
   isPercentInput,
   testCountsFor,
   testTableRows,

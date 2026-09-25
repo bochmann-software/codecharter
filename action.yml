@@ -62,8 +62,10 @@ inputs:
         - 'true' — the lines changed by the triggering event. On pull requests,
           the base branch against the head (merge-base..head). On pushes, the
           pushed range (before..sha, from their merge-base); when `before` is
-          empty or all zeros (a new branch) the pushed commit against its
-          parent (sha~1..sha). A push whose commit has no parent in the
+          empty or all zeros (a new branch), or names a commit the checkout
+          does not contain (typically after a force push; with a warning), the
+          pushed commit against its parent (sha~1..sha). A push whose commit
+          has no parent in the
           checkout (a root commit, or too shallow a clone) and any other event
           type fall back to the whole solution with a warning.
         - a git ref range, e.g. 'main..HEAD' or 'origin/main..HEAD'.

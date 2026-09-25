@@ -26,7 +26,7 @@ the latest release in its line.
   `diff-coverage-covered-lines` and `diff-coverage-uncovered-regions`, empty
   when no changed-lines gate ran. A diff file in coverage mode, an invalid
   `min-diff-coverage`, and `min-diff-coverage` with `diff` off fail the step
-  with a message saying what to change. Needs a CLI with changed-line coverage
+  with a message saying what to change, before the CLI is downloaded. Needs a CLI with changed-line coverage
   (`version: latest` satisfies it). The `badge` payload keeps reporting
   whole-solution coverage.
 
@@ -36,7 +36,9 @@ the latest release in its line.
   of falling back to the whole solution. A push is compared as `before..sha`
   (from their merge-base, which on a fast-forward push is `before` itself); a
   push that creates a branch, where `before` is empty or all zeros, compares
-  the pushed commit with its parent. Workflows that set `diff: true` and also
+  the pushed commit with its parent, and so does a push whose `before` is not
+  a commit in the checkout (typically a force push that rewrote history; a
+  warning names the missing commit). Workflows that set `diff: true` and also
   run on `push` therefore now analyze (or gate) only the pushed changes; set
   `diff` from an expression such as
   `${{ github.event_name == 'pull_request' }}` to keep whole-solution runs on

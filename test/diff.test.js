@@ -177,12 +177,13 @@ test('resolveDiffArgs: "true" on a PR falls back to the base tip when merge-base
 // ---------------------------------------------------------------------------
 
 // Records every git call and answers them like a checkout with history: the
-// merge-base of anything is MERGEBASE, and PUSHSHA~1 resolves to PARENTSHA
-// unless the test says the commit has no parent.
-function recordGit({ parent = 'PARENTSHA', mergeBase = 'MERGEBASE' } = {}) {
+// merge-base of anything is MERGEBASE, PUSHSHA~1 resolves to PARENTSHA, and
+// `before` is a commit in the checkout, unless the test says otherwise.
+function recordGit({ parent = 'PARENTSHA', mergeBase = 'MERGEBASE', reachable = true } = {}) {
   const calls = [];
   exec.exec = async (cmd, args, opts) => {
     calls.push([cmd, ...args]);
+    if (args.includes('cat-file')) return reachable ? 0 : 128;
     if (args.includes('rev-parse')) {
       if (!parent) return 1;
       opts.listeners.stdout(Buffer.from(`${parent}\n`));
@@ -210,10 +211,42 @@ test('resolveDiffArgs: "true" on a push diffs before..sha through the merge-base
   assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
   assert.deepEqual(calls, [
     ['git', '-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BEFORESHA'],
+    ['git', '-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}'],
     ['git', '-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA'],
     ['git', '-C', workspace, 'diff', '--unified=0', 'MERGEBASE', 'PUSHSHA'],
   ]);
   assert.deepEqual(warnings, []);
+});
+
+test('resolveDiffArgs: "true" on a push whose before is not in the checkout diffs the commit against its parent', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA' };
+  const calls = recordGit({ reachable: false });
+  const result = await resolveDiffArgs('true', workspace, tmp);
+  assert.deepEqual(result, ['--diff', path.join(tmp, 'codecharter.diff')]);
+  assert.deepEqual(calls, [
+    ['git', '-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BEFORESHA'],
+    ['git', '-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}'],
+    ['git', '-C', workspace, 'rev-parse', '--verify', '--quiet', 'PUSHSHA~1^{commit}'],
+    ['git', '-C', workspace, 'diff', '--unified=0', 'PARENTSHA', 'PUSHSHA'],
+  ]);
+  assert.deepEqual(warnings, [
+    "The push's previous tip BEFORESHA is not a commit in the checkout: the push rewrote history, or the " +
+      'checkout does not contain it. Comparing PUSHSHA with its parent instead.',
+  ]);
+  assert.deepEqual(failures, []);
+});
+
+test('resolveEventRange: an unreachable before without a parent names both in the skip reason', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA' };
+  recordGit({ reachable: false, parent: '' });
+  assert.deepEqual(await resolveEventRange(workspace), {
+    skipped:
+      'this push has no previous tip (`before` BEFORESHA is not a commit in the checkout) and commit PUSHSHA ' +
+      'has no parent in the checkout: it is a root commit, or the checkout is too shallow ' +
+      '(use actions/checkout with fetch-depth: 2 or more)',
+  });
 });
 
 test('resolveDiffArgs: "true" on a push keeps before when its merge-base is unreachable', async () => {

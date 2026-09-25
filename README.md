@@ -244,7 +244,7 @@ changed-lines gate described above.) The single value is interpreted by content:
 | `diff` value | Behavior |
 |---|---|
 | `false` (default) | Analyze the whole solution. |
-| `true` | On pull requests, diff against the base branch (`merge-base..head`). On pushes, diff the pushed range (`before..sha`, from their merge-base); a push that creates a branch (`before` empty or all zeros) diffs the pushed commit against its parent. A pushed root commit (or a checkout too shallow to hold the parent) and every other event type analyze the whole solution, with a warning that says why. |
+| `true` | On pull requests, diff against the base branch (`merge-base..head`). On pushes, diff the pushed range (`before..sha`, from their merge-base); a push that creates a branch (`before` empty or all zeros), or whose `before` is not a commit in the checkout (typically after a force push, which is warned about), diffs the pushed commit against its parent. A pushed root commit (or a checkout too shallow to hold the parent) and every other event type analyze the whole solution, with a warning that says why. |
 | a git ref range, e.g. `main..HEAD` | Diff that range. |
 | a path to a unified diff file | Use that diff as-is. |
 

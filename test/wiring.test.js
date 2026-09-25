@@ -43,11 +43,13 @@ let postStatus;
 let cliArgs;
 let gitCalls;
 let infos;
+let beforeReachable;
 
 // Answers git like a checkout with history: every merge-base is MERGEBASE and
 // every parent lookup PARENTSHA. Records the calls.
 function fakeGit(args, opts) {
   gitCalls.push(args);
+  if (args.includes('cat-file')) return beforeReachable ? 0 : 128;
   const answer = args.includes('merge-base') ? 'MERGEBASE' : args.includes('rev-parse') ? 'PARENTSHA' : '';
   if (answer || args.includes('diff')) opts.listeners?.stdout(Buffer.from(answer ? `${answer}\n` : 'patch\n'));
   return 0;
@@ -121,6 +123,7 @@ beforeEach(() => {
   cliArgs = null;
   gitCalls = [];
   infos = [];
+  beforeReachable = true;
 });
 
 afterEach(() => {
@@ -411,6 +414,7 @@ test('analyze mode: diff: true on a push diffs the pushed range', async () => {
   );
   assert.deepEqual(gitCalls, [
     ['-C', workspace, 'fetch', '--no-tags', '--depth=1', 'origin', 'BEFORESHA'],
+    ['-C', workspace, 'cat-file', '-e', 'BEFORESHA^{commit}'],
     ['-C', workspace, 'merge-base', 'BEFORESHA', 'PUSHSHA'],
     ['-C', workspace, 'diff', '--unified=0', 'MERGEBASE', 'PUSHSHA'],
   ]);
@@ -607,3 +611,87 @@ test('coverage mode: run() hands the diff and min-diff-coverage inputs to the CL
   assert.equal(path.basename(tmpJson), 'coverage.json');
   assert.match(failures[0], /^Changed-line coverage is 60\.00%/);
 });
+
+test('analyze mode: diff: true on a push whose before is gone diffs the commit against its parent', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA', repository: { default_branch: 'main' } };
+  beforeReachable = false;
+  await analyzeRun({ INPUT_DIFF: 'true' });
+  const workspace = process.env.GITHUB_WORKSPACE;
+  assert.deepEqual(
+    cliArgs,
+    expectedAnalyzeArgs(workspace, (tmp) => ['--diff', path.join(tmp, 'codecharter.diff')])
+  );
+  assert.deepEqual(gitCalls.at(-1), ['-C', workspace, 'diff', '--unified=0', 'PARENTSHA', 'PUSHSHA']);
+  assert.ok(
+    warnings.includes(
+      "The push's previous tip BEFORESHA is not a commit in the checkout: the push rewrote history, or the " +
+        'checkout does not contain it. Comparing PUSHSHA with its parent instead.'
+    )
+  );
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: diff: true on a push whose before is gone gates parent..sha', async () => {
+  github.context.eventName = 'push';
+  github.context.payload = { before: 'BEFORESHA' };
+  beforeReachable = false;
+  await coverageRun(realReport('coverage-diff-met-whole-below.json'), { diff: 'true', minDiffCoverage: '50' }, 0);
+  assert.deepEqual(cliArgs, [...coverageHead(), '--git-ref', 'PARENTSHA..PUSHSHA', '--min-diff-coverage', '50']);
+  assert.ok(
+    warnings.includes(
+      "The push's previous tip BEFORESHA is not a commit in the checkout: the push rewrote history, or the " +
+        'checkout does not contain it. Comparing PUSHSHA with its parent instead.'
+    )
+  );
+  assert.deepEqual(failures, []);
+});
+
+// A configuration error in the changed-lines gate must fail before the CLI is
+// downloaded: every portal GET (manifest or archive) is recorded, and none may
+// happen.
+for (const [label, inputs, message] of [
+  [
+    'a diff file',
+    { INPUT_DIFF: 'changes.diff' },
+    /^`diff` points at the file "changes\.diff", but coverage mode gates a git ref range/,
+  ],
+  [
+    'an invalid min-diff-coverage',
+    { INPUT_DIFF: 'true', 'INPUT_MIN-DIFF-COVERAGE': '99,5' },
+    /^Invalid `min-diff-coverage` "99,5"/,
+  ],
+  [
+    'min-diff-coverage without diff',
+    { 'INPUT_MIN-DIFF-COVERAGE': '100' },
+    /^`min-diff-coverage` is set, but `diff` is off/,
+  ],
+]) {
+  test(`coverage mode: ${label} fails before the CLI download`, async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-cfg-'));
+    fs.writeFileSync(path.join(workspace, 'changes.diff'), 'patch');
+    process.env.GITHUB_WORKSPACE = workspace;
+    process.env['INPUT_API-KEY'] = 'KEY';
+    process.env.INPUT_MODE = 'coverage';
+    for (const [key, value] of Object.entries(inputs)) process.env[key] = value;
+    const downloads = [];
+    HttpClient.prototype.get = async (url) => {
+      downloads.push(url);
+      throw new Error('no download expected');
+    };
+    exec.exec = async (cmd, args) => {
+      cliArgs = [cmd, ...args];
+      return 0;
+    };
+    try {
+      await run();
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], message);
+    assert.deepEqual(downloads, [], 'obtainCli never asked the portal for the CLI');
+    assert.equal(cliArgs, null, 'nothing was executed');
+    assert.deepEqual(posts, []);
+  });
+}
