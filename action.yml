@@ -33,18 +33,40 @@ inputs:
   rules:
     description: |
       Path to a local rules directory in your repository (e.g. rules), passed to
-      the CLI as `--rules`. Leave empty to let the CLI use its own default: a
-      `rules` directory in the repository root if one exists, otherwise the
-      sample rules bundled with the CLI.
+      the CLI as `--rules`. With a CLI >= 1.6.4 this ADDS to whatever the CLI
+      already resolves from `.codecharter/config.yml` (`profiles:` and `rules:`)
+      instead of replacing it; a later source wins on a duplicate rule id, and
+      the CLI reports the shadowing. Set `rules-only: true` to restore the old
+      exclusive behavior. Leave `rules` empty to let the CLI resolve rules
+      itself from `.codecharter/config.yml` alone.
     required: false
     default: ''
+  rules-only:
+    description: |
+      Passed to the CLI as `--rules-only`. Restricts the run to the `rules`
+      input's directories only, ignoring `profiles:` and `rules:` declared in
+      `.codecharter/config.yml` — the exclusive behavior `rules` had before CLI
+      1.6.4. Requires `rules` to be set; the step fails fast with an actionable
+      message otherwise (the CLI itself would exit 2, "inconclusive", for the
+      same reason, but only after the download and the run). Requires a CLI
+      with additive rules (`version: latest`, the default, satisfies it; pin
+      >= 1.6.4 explicitly otherwise).
+    required: false
+    default: 'false'
   require-rules:
     description: |
-      Fail the run instead of silently falling back to the CLI's bundled sample
-      rules. When 'true' and neither `rules` is set nor a `rules/` directory
-      exists in the repository root, the step fails with an actionable message.
-      Leave 'false' (default) to allow the bundled-rules fallback; a warning is
-      logged whenever that fallback is used either way.
+      Fail the run instead of silently proceeding when no rule source resolves
+      at all: no `rules` input, no `rules/` directory in the repository root,
+      and no `profiles:` or `rules:` declared in `.codecharter/config.yml`.
+      Leave 'false' (default) to only warn in that case. This is a pre-flight
+      check the action makes before invoking the CLI, so it fails fast without
+      spending the download/run — it does not overlap with a CLI >= 1.6.4's own
+      exit code 2 ("inconclusive"), which instead catches a declared source that
+      ultimately failed to resolve (e.g. a profile the portal could not serve),
+      something this pre-flight check cannot see ahead of time. Both can fire
+      independently; neither is a duplicate of the other. With CLI < 1.6.4 (no
+      bundled-samples fallback removal yet) this also covers the silent
+      fallback to the CLI's bundled sample rules.
     required: false
     default: 'false'
   fail-on:

@@ -70257,7 +70257,7 @@ function discoverSolutions(workspace) {
   const chosen = solutions.length > 0 ? solutions : projects;
   return chosen.sort(byDepthThenName);
 }
-function hasConfiguredProfiles(workspace) {
+function findConfigYml(workspace) {
   const configPath = [".codecharter", ".codeguard"].map((dir) => path14.join(workspace, dir, "config.yml")).find((candidate) => {
     try {
       return fs10.existsSync(candidate);
@@ -70265,16 +70265,20 @@ function hasConfiguredProfiles(workspace) {
       return false;
     }
   });
-  if (!configPath) return false;
-  let text;
+  if (!configPath) return null;
   try {
-    text = fs10.readFileSync(configPath, "utf8");
+    return fs10.readFileSync(configPath, "utf8");
   } catch {
-    return false;
+    return null;
   }
+}
+function hasConfiguredListKey(workspace, key) {
+  const text = findConfigYml(workspace);
+  if (text === null) return false;
   const lines = text.split(/\r?\n/);
+  const keyPattern = new RegExp(`^${key}:\\s*(.*)$`);
   for (let i = 0; i < lines.length; i++) {
-    const match2 = /^profiles:\s*(.*)$/.exec(lines[i].replace(/#.*$/, ""));
+    const match2 = keyPattern.exec(lines[i].replace(/#.*$/, ""));
     if (!match2) continue;
     const inline = match2[1].trim();
     if (inline.startsWith("[")) return /\[\s*[^\s\]]/.test(inline);
@@ -70288,6 +70292,12 @@ function hasConfiguredProfiles(workspace) {
     return false;
   }
   return false;
+}
+function hasConfiguredProfiles(workspace) {
+  return hasConfiguredListKey(workspace, "profiles");
+}
+function hasConfiguredRulesKey(workspace) {
+  return hasConfiguredListKey(workspace, "rules");
 }
 async function gitCapture(args) {
   let out = "";
@@ -70477,6 +70487,20 @@ function readJson(filePath) {
     return null;
   }
 }
+function reachFromReport(report) {
+  const run2 = report && report.run;
+  const reach = run2 && run2.reach;
+  if (!reach || typeof reach !== "object") return null;
+  const ruleSources = Array.isArray(run2.ruleSources) ? run2.ruleSources : null;
+  const pick = (...names) => names.map((n) => reach[n]).find((v) => typeof v === "number");
+  return {
+    isInconclusive: reach.isInconclusive === true,
+    reasons: Array.isArray(reach.inconclusiveReasons) ? reach.inconclusiveReasons.filter(Boolean) : [],
+    evaluated: pick("evaluatedRuleCount", "evaluatedCount", "evaluated"),
+    resolved: pick("resolvedRuleCount", "resolvedCount", "resolved"),
+    ruleSourceCount: ruleSources ? ruleSources.length : null
+  };
+}
 function tally(report) {
   const violations = report.violations || [];
   const counts = { total: violations.length, error: 0, warn: 0, info: 0 };
@@ -70562,6 +70586,19 @@ function buildComment(report, counts, workspace, opts) {
   const gateBadge = failOnBadge(failOn);
   const heading = titleSuffix ? `## CodeCharter Analysis \u2014 \`${titleSuffix}\`` : "## CodeCharter Analysis";
   const lines = [heading, ""];
+  const reach = reachFromReport(report);
+  if (reach) {
+    if (reach.isInconclusive) {
+      const reasons = reach.reasons.length ? reach.reasons.join("; ") : "no reason was reported";
+      lines.push(`**Inconclusive run** \u2014 ${reasons}.`, "");
+    } else {
+      const parts = [];
+      if (reach.ruleSourceCount !== null) parts.push(`${reach.ruleSourceCount} rule source(s)`);
+      if (reach.resolved !== void 0) parts.push(`${reach.resolved} rule(s) resolved`);
+      if (reach.evaluated !== void 0) parts.push(`${reach.evaluated} rule(s) evaluated`);
+      if (parts.length) lines.push(`_Reach: ${parts.join(", ")}._`, "");
+    }
+  }
   if (counts.total === 0) {
     lines.push(
       `![issues](https://img.shields.io/badge/issues-0-brightgreen?style=flat-square) ${minBadge} ${gateBadge}`
@@ -71197,7 +71234,14 @@ async function run() {
   }
   let solution = core.getInput("solution");
   const rules = core.getInput("rules");
+  const rulesOnly = (core.getInput("rules-only") || "false").toLowerCase() === "true";
   const requireRules = (core.getInput("require-rules") || "false").toLowerCase() === "true";
+  if (rulesOnly && !rules.trim()) {
+    core.setFailed(
+      "`rules-only: true` requires `rules` to be set \u2014 it restricts the run to that directory and ignores `profiles:`/`rules:` from `.codecharter/config.yml`, so there is nothing to run against otherwise. Set `rules` to your rules directory, or drop `rules-only`."
+    );
+    return;
+  }
   const failOn = core.getInput("fail-on") || "error";
   const severity = core.getInput("severity-threshold") || "info";
   const version3 = core.getInput("version") || "latest";
@@ -71305,14 +71349,16 @@ async function run() {
     }
     if (rules && rules.trim()) {
       args.push("--rules", path14.resolve(workspace, rules.trim()));
+      if (rulesOnly) args.push("--rules-only");
     } else {
       const localRules = path14.join(workspace, "rules");
       const hasLocalRules = fs10.existsSync(localRules) && fs10.statSync(localRules).isDirectory();
       const hasProfiles = hasConfiguredProfiles(workspace);
-      if (!hasLocalRules && !hasProfiles) {
-        const detail = "No `rules` input was set, no `rules/` directory exists in the repository root, and no `.codecharter/config.yml` declares any `profiles:`, so CodeCharter would analyze against the CLI's bundled sample rules. What to do: add a platform profile to `.codecharter/config.yml` under `profiles:`, add a `rules/` directory with your `.cgr` rules, or point the `rules` input at your rules directory.";
+      const hasRulesKey = hasConfiguredRulesKey(workspace);
+      if (!hasLocalRules && !hasProfiles && !hasRulesKey) {
+        const detail = "No `rules` input was set, no `rules/` directory exists in the repository root, and `.codecharter/config.yml` declares neither `profiles:` nor `rules:`, so CodeCharter has no rule source to run against. What to do: add a platform profile to `.codecharter/config.yml` under `profiles:`, declare a rules directory there under `rules:` (CLI >= 1.6.4), or point the `rules` input at your rules directory.";
         if (requireRules) {
-          core.setFailed(detail + " This step has `require-rules: true`, which forbids the bundled-rules fallback.");
+          core.setFailed(detail + " This step has `require-rules: true`, which forbids running with no rule source.");
           return;
         }
         core.warning(detail);
@@ -71410,7 +71456,13 @@ See the action README, section "Requirements".`
 See the action README, section "Inputs".`
         );
       }
-      if (failOn === "never" && report) {
+      const reach = report && reachFromReport(report);
+      if (reach && reach.isInconclusive) {
+        const reasons = reach.reasons.length ? reach.reasons.join("; ") : "no reason was reported";
+        core.setFailed(
+          `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}. This is independent of \`fail-on\` \u2014 the CLI could not establish that its rule sources actually resolved. What to do: check the CodeCharter log above for the specific cause (e.g. a stale \`codecharter.lock.json\` needing \`codecharter update\`, a config pin drift, or no resolvable rule source at all). See the action README, section "Rules resolution".`
+        );
+      } else if (failOn === "never" && report) {
         core.info(`CodeCharter found ${tally(report).total} finding(s); not failing the build (fail-on: never).`);
       } else if (report) {
         const c = tally(report);
@@ -71468,6 +71520,7 @@ export {
   floorPercent,
   footerLine,
   hasConfiguredProfiles,
+  hasConfiguredRulesKey,
   isMainModule,
   isPercentInput,
   locationLink,
@@ -71477,6 +71530,7 @@ export {
   projectFailed,
   projectResultCell,
   publishViaPortal,
+  reachFromReport,
   readJson,
   resolveCoverageDiffArgs,
   resolveCoverageGitRef,

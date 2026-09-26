@@ -10,7 +10,14 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-import { discoverSolutions, hasConfiguredProfiles, findExecutable, readJson, verifySha } from '../src/index.js';
+import {
+  discoverSolutions,
+  hasConfiguredProfiles,
+  hasConfiguredRulesKey,
+  findExecutable,
+  readJson,
+  verifySha,
+} from '../src/index.js';
 
 let root;
 
@@ -145,6 +152,44 @@ test('hasConfiguredProfiles: a commented-out profile item does not count', () =>
 test('hasConfiguredProfiles: item with an inline trailing comment still counts', () => {
   const ws = writeConfig('cfg-trailing', 'profiles:\n  - codeguard/csharp-all@latest # pinned\n');
   assert.equal(hasConfiguredProfiles(ws), true);
+});
+
+// ---------------------------------------------------------------------------
+// hasConfiguredRulesKey (CLI >= 1.6.4's `rules:` config key, same shape as
+// `profiles:` — reuses the same block/flow-list scan)
+// ---------------------------------------------------------------------------
+
+test('hasConfiguredRulesKey: no config.yml → false', () => {
+  assert.equal(hasConfiguredRulesKey(tmpdir('rk-none')), false);
+});
+
+test('hasConfiguredRulesKey: block-list rules → true', () => {
+  const ws = writeConfig('rk-block', 'version: 1\nrules:\n  - conventions\nexclude:\n  - "tests/**"\n');
+  assert.equal(hasConfiguredRulesKey(ws), true);
+});
+
+test('hasConfiguredRulesKey: flow-list rules → true', () => {
+  const ws = writeConfig('rk-flow', 'version: 1\nrules: [conventions]\n');
+  assert.equal(hasConfiguredRulesKey(ws), true);
+});
+
+test('hasConfiguredRulesKey: empty list → false', () => {
+  const ws = writeConfig('rk-empty', 'version: 1\nrules: []\n');
+  assert.equal(hasConfiguredRulesKey(ws), false);
+});
+
+test('hasConfiguredRulesKey: no rules key at all → false', () => {
+  const ws = writeConfig('rk-none-key', 'version: 1\nprofiles:\n  - codeguard/csharp-all@latest\n');
+  assert.equal(hasConfiguredRulesKey(ws), false);
+});
+
+test('hasConfiguredRulesKey: profiles and rules are independent keys', () => {
+  const ws = writeConfig(
+    'rk-both',
+    'version: 1\nprofiles:\n  - codeguard/csharp-all@latest\nrules:\n  - conventions\n'
+  );
+  assert.equal(hasConfiguredProfiles(ws), true);
+  assert.equal(hasConfiguredRulesKey(ws), true);
 });
 
 // ---------------------------------------------------------------------------

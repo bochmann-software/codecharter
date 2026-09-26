@@ -188,16 +188,11 @@ function discoverSolutions(workspace) {
 }
 
 /**
- * Returns true when the repository declares at least one platform profile in
- * `.codecharter/config.yml` (a non-empty `profiles:` block- or flow-list). Those
- * profiles are the CLI's rule source, resolved from the portal — independent of
- * a local `rules/` directory. We probe the file directly (no YAML dependency)
- * only to decide whether the "no rules configured" warning would be a false
- * alarm; a lenient scan is enough because profile slugs contain no `#` or `[`.
+ * Locates `.codecharter/config.yml`, with a legacy `.codeguard/config.yml`
+ * fallback matching the CLI's dual-read so a repository configured before the
+ * rename is still detected. Returns null when neither exists or is readable.
  */
-function hasConfiguredProfiles(workspace) {
-  // Primary .codecharter with a legacy .codeguard fallback, matching the CLI's
-  // dual-read so a repository configured before the rename is still detected.
+function findConfigYml(workspace) {
   const configPath = ['.codecharter', '.codeguard']
     .map((dir) => path.join(workspace, dir, 'config.yml'))
     .find((candidate) => {
@@ -207,21 +202,32 @@ function hasConfiguredProfiles(workspace) {
         return false;
       }
     });
-  if (!configPath) return false;
-
-  let text;
+  if (!configPath) return null;
   try {
-    text = fs.readFileSync(configPath, 'utf8');
+    return fs.readFileSync(configPath, 'utf8');
   } catch {
-    // Unreadable config must not crash the run; treat it as "no profiles" so the
+    // Unreadable config must not crash the run; treat it as absent so the
     // existing warning path still applies rather than masking a real gap.
-    return false;
+    return null;
   }
+}
+
+/**
+ * Returns true when `.codecharter/config.yml` declares a non-empty block- or
+ * flow-list under the given top-level key (`profiles` or `rules`). We probe
+ * the file directly (no YAML dependency) only to decide whether the "no rules
+ * configured" warning would be a false alarm; a lenient scan is enough because
+ * profile slugs and rule directory paths contain no `#` or `[`.
+ */
+function hasConfiguredListKey(workspace, key) {
+  const text = findConfigYml(workspace);
+  if (text === null) return false;
 
   const lines = text.split(/\r?\n/);
+  const keyPattern = new RegExp(`^${key}:\\s*(.*)$`);
   for (let i = 0; i < lines.length; i++) {
-    // Strip trailing comments; a top-level `profiles:` key sits at column 0.
-    const match = /^profiles:\s*(.*)$/.exec(lines[i].replace(/#.*$/, ''));
+    // Strip trailing comments; a top-level key sits at column 0.
+    const match = keyPattern.exec(lines[i].replace(/#.*$/, ''));
     if (!match) continue;
 
     const inline = match[1].trim();
@@ -234,13 +240,34 @@ function hasConfiguredProfiles(workspace) {
     for (let j = i + 1; j < lines.length; j++) {
       const next = lines[j].replace(/#.*$/, '');
       if (next.trim().length === 0) continue;
-      // A new column-0 key that is not a list item ends the profiles block.
+      // A new column-0 key that is not a list item ends the block.
       if (/^\S/.test(next) && !next.trimStart().startsWith('-')) break;
       if (/^\s*-\s+\S/.test(next)) return true;
     }
     return false;
   }
   return false;
+}
+
+/**
+ * Returns true when the repository declares at least one platform profile in
+ * `.codecharter/config.yml` (a non-empty `profiles:` block- or flow-list).
+ * Those profiles are one of the CLI's rule sources, resolved from the portal —
+ * independent of a local `rules/` directory or the `rules:` config key.
+ */
+function hasConfiguredProfiles(workspace) {
+  return hasConfiguredListKey(workspace, 'profiles');
+}
+
+/**
+ * Returns true when the repository declares at least one rules directory
+ * under `rules:` in `.codecharter/config.yml` (CLI >= 1.6.4). Those
+ * directories are resolved by the CLI itself, relative to the repository
+ * root — independent of the action's own `rules` input and of a local
+ * `rules/` directory that is not declared this way.
+ */
+function hasConfiguredRulesKey(workspace) {
+  return hasConfiguredListKey(workspace, 'rules');
 }
 
 /** Runs a silent git command and captures its stdout; never throws on a non-zero exit. */
@@ -555,6 +582,31 @@ function readJson(filePath) {
   }
 }
 
+/**
+ * Extracts the run's rule-source reach from a JSON report (CLI >= 1.6.4): how
+ * many rule sources resolved, how many rules that put in play, and whether the
+ * CLI judged the run inconclusive (no resolvable rule source, a lock/pin
+ * drift, …). A report from an older CLI, or one missing the field, yields
+ * null, so callers degrade to "nothing to show" rather than guessing.
+ */
+function reachFromReport(report) {
+  const run = report && report.run;
+  const reach = run && run.reach;
+  if (!reach || typeof reach !== 'object') return null;
+  const ruleSources = Array.isArray(run.ruleSources) ? run.ruleSources : null;
+  // Field names are not yet pinned down beyond the CLI's own docs/help text;
+  // accept the documented names plus the plainest fallbacks so a harmless
+  // rename on the CLI side does not silently blank this out.
+  const pick = (...names) => names.map((n) => reach[n]).find((v) => typeof v === 'number');
+  return {
+    isInconclusive: reach.isInconclusive === true,
+    reasons: Array.isArray(reach.inconclusiveReasons) ? reach.inconclusiveReasons.filter(Boolean) : [],
+    evaluated: pick('evaluatedRuleCount', 'evaluatedCount', 'evaluated'),
+    resolved: pick('resolvedRuleCount', 'resolvedCount', 'resolved'),
+    ruleSourceCount: ruleSources ? ruleSources.length : null,
+  };
+}
+
 /** Counts violations by normalized severity. */
 function tally(report) {
   const violations = report.violations || [];
@@ -670,6 +722,23 @@ function buildComment(report, counts, workspace, opts) {
   const gateBadge = failOnBadge(failOn);
   const heading = titleSuffix ? `## CodeCharter Analysis — \`${titleSuffix}\`` : '## CodeCharter Analysis';
   const lines = [heading, ''];
+
+  // Surface the run's rule-source reach (CLI >= 1.6.4) so a suspiciously clean
+  // "0 findings" is not mistaken for a healthy run when it was actually
+  // inconclusive (no rule source resolved, a stale lock, a pin drift, …).
+  const reach = reachFromReport(report);
+  if (reach) {
+    if (reach.isInconclusive) {
+      const reasons = reach.reasons.length ? reach.reasons.join('; ') : 'no reason was reported';
+      lines.push(`**Inconclusive run** — ${reasons}.`, '');
+    } else {
+      const parts = [];
+      if (reach.ruleSourceCount !== null) parts.push(`${reach.ruleSourceCount} rule source(s)`);
+      if (reach.resolved !== undefined) parts.push(`${reach.resolved} rule(s) resolved`);
+      if (reach.evaluated !== undefined) parts.push(`${reach.evaluated} rule(s) evaluated`);
+      if (parts.length) lines.push(`_Reach: ${parts.join(', ')}._`, '');
+    }
+  }
 
   if (counts.total === 0) {
     lines.push(
@@ -1599,7 +1668,21 @@ async function run() {
 
   let solution = core.getInput('solution');
   const rules = core.getInput('rules');
+  const rulesOnly = (core.getInput('rules-only') || 'false').toLowerCase() === 'true';
   const requireRules = (core.getInput('require-rules') || 'false').toLowerCase() === 'true';
+
+  // `--rules-only` without `--rules` is a CLI usage error the CLI itself turns
+  // into exit code 2 ("inconclusive") — but only after the download and the
+  // run. Catch it here instead, before spending either.
+  if (rulesOnly && !rules.trim()) {
+    core.setFailed(
+      '`rules-only: true` requires `rules` to be set — it restricts the run to that ' +
+        'directory and ignores `profiles:`/`rules:` from `.codecharter/config.yml`, so ' +
+        'there is nothing to run against otherwise. Set `rules` to your rules directory, ' +
+        'or drop `rules-only`.'
+    );
+    return;
+  }
   const failOn = core.getInput('fail-on') || 'error';
   const severity = core.getInput('severity-threshold') || 'info';
   const version = core.getInput('version') || 'latest';
@@ -1734,29 +1817,38 @@ async function run() {
       args.push('--output', `sarif:${sarifPath}`);
     }
     if (rules && rules.trim()) {
-      // Same absolute-vs-relative handling as the solution path above.
+      // Same absolute-vs-relative handling as the solution path above. With a
+      // CLI >= 1.6.4 this ADDS to whatever `.codecharter/config.yml` already
+      // resolves (`profiles:` and `rules:`); `--rules-only` (guarded above to
+      // require `rules`) restores the pre-1.6.4 exclusive behavior.
       args.push('--rules', path.resolve(workspace, rules.trim()));
+      if (rulesOnly) args.push('--rules-only');
     } else {
-      // No explicit `rules`: the CLI resolves rules itself. It runs a `.codecharter/
-      // config.yml` platform profile (resolved from the portal) when one is
-      // declared, and/or a local `rules/` directory in the repo root; only with
-      // none of those does it fall back to the sample rules bundled with the CLI.
-      // That fallback is silent at default verbosity, which surprises users who
-      // expect their own rule set. Mirror the CLI's probes — config profiles and
-      // the repo-root `rules/` dir — so the warning fires only when there is
-      // genuinely no rule source, and `require-rules` refuses only that case.
+      // No explicit `rules` input: the CLI resolves rules itself, from
+      // `.codecharter/config.yml` — a `profiles:` list (resolved from the
+      // portal) and/or a `rules:` list of local directories (CLI >= 1.6.4,
+      // paths relative to the repo root). A CLI < 1.6.4 additionally probes an
+      // undeclared `rules/` directory in the repo root implicitly; that
+      // implicit lookup (and the bundled-samples fallback) is gone from 1.6.4
+      // on, so an undeclared `rules/` directory is no longer picked up there —
+      // it must be declared under `rules:` in config.yml instead. We check the
+      // repo-root `rules/` directory anyway (best-effort for older/pinned
+      // CLIs) alongside both config keys, so the warning fires only when there
+      // is genuinely no rule source we can see, and `require-rules` refuses
+      // only that case.
       const localRules = path.join(workspace, 'rules');
       const hasLocalRules = fs.existsSync(localRules) && fs.statSync(localRules).isDirectory();
       const hasProfiles = hasConfiguredProfiles(workspace);
-      if (!hasLocalRules && !hasProfiles) {
+      const hasRulesKey = hasConfiguredRulesKey(workspace);
+      if (!hasLocalRules && !hasProfiles && !hasRulesKey) {
         const detail =
-          'No `rules` input was set, no `rules/` directory exists in the repository root, and no ' +
-          '`.codecharter/config.yml` declares any `profiles:`, so CodeCharter would analyze against ' +
-          "the CLI's bundled sample rules. What to do: add a platform profile to " +
-          '`.codecharter/config.yml` under `profiles:`, add a `rules/` directory with your `.cgr` ' +
-          'rules, or point the `rules` input at your rules directory.';
+          'No `rules` input was set, no `rules/` directory exists in the repository root, and ' +
+          '`.codecharter/config.yml` declares neither `profiles:` nor `rules:`, so CodeCharter has no ' +
+          'rule source to run against. What to do: add a platform profile to `.codecharter/config.yml` ' +
+          'under `profiles:`, declare a rules directory there under `rules:` (CLI >= 1.6.4), or point ' +
+          'the `rules` input at your rules directory.';
         if (requireRules) {
-          core.setFailed(detail + ' This step has `require-rules: true`, which forbids the bundled-rules fallback.');
+          core.setFailed(detail + ' This step has `require-rules: true`, which forbids running with no rule source.');
           return;
         }
         core.warning(detail);
@@ -1903,12 +1995,22 @@ async function run() {
         );
       }
 
-      // fail-on: never means "report but never fail the build". The CLI has no
-      // such level: omitting --fail-on makes it exit 1 on *any* violation. So a
-      // non-zero exit that still produced a report is just findings — swallow it
-      // here. A non-zero exit with no report is a real failure (crash, missing
-      // SDK, license, download) and must propagate.
-      if (failOn === 'never' && report) {
+      // An inconclusive run (CLI >= 1.6.4, exit code 2) is neither the fail-on
+      // gate tripping on findings nor a crash: no rule source resolved, or a
+      // declared one failed to (stale lock, config pin drift, …). Report it as
+      // its own failure mode, independent of `fail-on`/`fail-on: never`, so it
+      // is never mistaken for "0 findings, gate satisfied".
+      const reach = report && reachFromReport(report);
+      if (reach && reach.isInconclusive) {
+        const reasons = reach.reasons.length ? reach.reasons.join('; ') : 'no reason was reported';
+        core.setFailed(
+          `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}. This is independent of ` +
+            '`fail-on` — the CLI could not establish that its rule sources actually resolved. What to ' +
+            'do: check the CodeCharter log above for the specific cause (e.g. a stale ' +
+            '`codecharter.lock.json` needing `codecharter update`, a config pin drift, or no resolvable ' +
+            'rule source at all). See the action README, section "Rules resolution".'
+        );
+      } else if (failOn === 'never' && report) {
         core.info(`CodeCharter found ${tally(report).total} finding(s); not failing the build (fail-on: never).`);
       } else if (report) {
         // A report exists: the non-zero exit is the fail-on gate tripping on
@@ -2007,6 +2109,8 @@ export {
   findExecutable,
   discoverSolutions,
   hasConfiguredProfiles,
+  hasConfiguredRulesKey,
+  reachFromReport,
   resolveDiffArgs,
   fetchManifest,
   obtainCli,
