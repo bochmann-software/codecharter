@@ -16,10 +16,15 @@ the latest release in its line.
   actionable message otherwise, before spending the CLI download on a run that
   would itself exit 2 for the same reason.
 - An inconclusive run (CLI >= 1.6.4, exit code 2 with `run.reach.isInconclusive`
-  in the JSON report) now fails with its own distinct message instead of being
-  read as the `fail-on` gate tripping on zero findings. The comment/summary
-  also surfaces the run's rule-source reach (rule sources, rules resolved and
-  evaluated) when the report carries it.
+  in the JSON report) now fails with its own distinct message — the
+  `inconclusiveReasons` codes (e.g. `config-lock-drift`) plus any
+  `run.reach.drift` detail (which profile, the version config.yml requests
+  vs. what the lock has) — instead of being read as the `fail-on` gate
+  tripping on zero findings. The comment/summary surface the same detail, and
+  a conclusive run's comment lists each `run.ruleSources` entry with its
+  resolved count (e.g. "247 from codeguard/csharp-all@1.2.0, 7 from
+  .codecharter/rules") alongside the configured/resolved/evaluated totals from
+  `run.reach`.
 
 ### Changed
 

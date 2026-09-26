@@ -1,0 +1,55 @@
+{
+  "summary": {
+    "totalViolations": 1,
+    "totalTypes": 79,
+    "totalMethods": 166,
+    "durationMs": 13066
+  },
+  "run": {
+    "analysisUnit": "src/Sample.App/Sample.App.csproj",
+    "analysisUnitKind": "project",
+    "configPath": ".codecharter/config.yml",
+    "lockfilePath": ".codecharter/codecharter.lock.json",
+    "ruleSources": [
+      {
+        "kind": "profile",
+        "identity": "codeguard/csharp-all@1.2.0",
+        "declaredIdentity": "codeguard/csharp-all@1.2.0",
+        "configuredCount": 247,
+        "resolvedCount": 247,
+        "shadowedCount": 0,
+        "isResolved": true
+      },
+      {
+        "kind": "rules-directory",
+        "identity": ".codecharter/rules",
+        "declaredIdentity": ".codecharter/rules",
+        "resolvedCount": 7,
+        "shadowedCount": 0,
+        "isResolved": true
+      }
+    ],
+    "reach": {
+      "configured": 247,
+      "resolved": 254,
+      "evaluated": 254,
+      "unresolvedSources": [],
+      "drift": [],
+      "coreLibraryUnresolvedProjects": [],
+      "isInconclusive": false,
+      "inconclusiveReasons": []
+    }
+  },
+  "violations": [
+    {
+      "ruleId": "namespace-distance",
+      "ruleName": "Namespace far from main sequence",
+      "severity": "info",
+      "category": "Architecture",
+      "entityName": "Sample.App",
+      "entityKind": "Namespace",
+      "message": "Namespace far from main sequence: Sample.App",
+      "fingerprint": "b0fb6cd0420320bca9580b6d2d770b3e"
+    }
+  ]
+}

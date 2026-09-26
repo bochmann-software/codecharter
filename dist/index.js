@@ -70491,15 +70491,36 @@ function reachFromReport(report) {
   const run2 = report && report.run;
   const reach = run2 && run2.reach;
   if (!reach || typeof reach !== "object") return null;
-  const ruleSources = Array.isArray(run2.ruleSources) ? run2.ruleSources : null;
-  const pick = (...names) => names.map((n) => reach[n]).find((v) => typeof v === "number");
   return {
     isInconclusive: reach.isInconclusive === true,
     reasons: Array.isArray(reach.inconclusiveReasons) ? reach.inconclusiveReasons.filter(Boolean) : [],
-    evaluated: pick("evaluatedRuleCount", "evaluatedCount", "evaluated"),
-    resolved: pick("resolvedRuleCount", "resolvedCount", "resolved"),
-    ruleSourceCount: ruleSources ? ruleSources.length : null
+    configured: typeof reach.configured === "number" ? reach.configured : void 0,
+    resolved: typeof reach.resolved === "number" ? reach.resolved : void 0,
+    evaluated: typeof reach.evaluated === "number" ? reach.evaluated : void 0,
+    unresolvedSources: Array.isArray(reach.unresolvedSources) ? reach.unresolvedSources : [],
+    drift: Array.isArray(reach.drift) ? reach.drift : [],
+    coreLibraryUnresolvedProjects: Array.isArray(reach.coreLibraryUnresolvedProjects) ? reach.coreLibraryUnresolvedProjects : [],
+    ruleSources: Array.isArray(run2.ruleSources) ? run2.ruleSources : []
   };
+}
+function formatRuleSources(ruleSources) {
+  if (!ruleSources || ruleSources.length === 0) return "";
+  return ruleSources.map((s) => {
+    const identity = s.identity || s.declaredIdentity || "unknown source";
+    if (s.isResolved === false) return `${identity} (unresolved)`;
+    const count = typeof s.resolvedCount === "number" ? s.resolvedCount : 0;
+    return `${count} from ${identity}`;
+  }).join(", ");
+}
+function formatDrift(drift) {
+  if (!drift || drift.length === 0) return [];
+  return drift.map((d) => {
+    if (d.kind === "version-not-satisfied") {
+      return `${d.profile}: config.yml requests ${d.requestedSpec}, the lock has ${d.lockedVersion}`;
+    }
+    const rest = Object.entries(d).filter(([k]) => k !== "kind").map(([k, v]) => `${k}: ${v}`).join(", ");
+    return `${d.kind || "drift"}${rest ? ` (${rest})` : ""}`;
+  });
 }
 function tally(report) {
   const violations = report.violations || [];
@@ -70589,14 +70610,23 @@ function buildComment(report, counts, workspace, opts) {
   const reach = reachFromReport(report);
   if (reach) {
     if (reach.isInconclusive) {
-      const reasons = reach.reasons.length ? reach.reasons.join("; ") : "no reason was reported";
+      const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
       lines.push(`**Inconclusive run** \u2014 ${reasons}.`, "");
+      for (const line of formatDrift(reach.drift)) lines.push(`- ${line}`);
+      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${reach.unresolvedSources.join(", ")}`);
+      if (reach.coreLibraryUnresolvedProjects.length)
+        lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(", ")}`);
+      lines.push("");
     } else {
+      const sources = formatRuleSources(reach.ruleSources);
       const parts = [];
-      if (reach.ruleSourceCount !== null) parts.push(`${reach.ruleSourceCount} rule source(s)`);
-      if (reach.resolved !== void 0) parts.push(`${reach.resolved} rule(s) resolved`);
       if (reach.evaluated !== void 0) parts.push(`${reach.evaluated} rule(s) evaluated`);
-      if (parts.length) lines.push(`_Reach: ${parts.join(", ")}._`, "");
+      if (reach.resolved !== void 0 && reach.resolved !== reach.evaluated) parts.push(`${reach.resolved} resolved`);
+      if (reach.configured !== void 0 && reach.configured !== reach.resolved)
+        parts.push(`${reach.configured} configured`);
+      if (parts.length || sources) {
+        lines.push(`_Reach: ${parts.join(", ")}${parts.length && sources ? " \u2014 " : ""}${sources}._`, "");
+      }
     }
   }
   if (counts.total === 0) {
@@ -71458,9 +71488,10 @@ See the action README, section "Inputs".`
       }
       const reach = report && reachFromReport(report);
       if (reach && reach.isInconclusive) {
-        const reasons = reach.reasons.length ? reach.reasons.join("; ") : "no reason was reported";
+        const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
+        const driftDetail = formatDrift(reach.drift).join("; ");
         core.setFailed(
-          `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}. This is independent of \`fail-on\` \u2014 the CLI could not establish that its rule sources actually resolved. What to do: check the CodeCharter log above for the specific cause (e.g. a stale \`codecharter.lock.json\` needing \`codecharter update\`, a config pin drift, or no resolvable rule source at all). See the action README, section "Rules resolution".`
+          `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}${driftDetail ? ` \u2014 ${driftDetail}` : ""}. This is independent of \`fail-on\` \u2014 the CLI could not establish that its rule sources actually resolved. What to do: check the CodeCharter log above for the specific cause (e.g. a stale \`codecharter.lock.json\` needing \`codecharter update\`, a config pin drift, or no resolvable rule source at all). See the action README, section "Rules resolution".`
         );
       } else if (failOn === "never" && report) {
         core.info(`CodeCharter found ${tally(report).total} finding(s); not failing the build (fail-on: never).`);
@@ -71519,6 +71550,8 @@ export {
   findExecutable,
   floorPercent,
   footerLine,
+  formatDrift,
+  formatRuleSources,
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
   isMainModule,

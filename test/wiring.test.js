@@ -392,34 +392,81 @@ test('analyze mode: rules-only: true without rules fails before the CLI runs', a
 // inconclusive runs (CLI >= 1.6.4's run.reach.isInconclusive)
 // ---------------------------------------------------------------------------
 
-test('analyze mode: an inconclusive run fails distinctly from the fail-on gate, even with 0 findings', async () => {
+test('analyze mode: an inconclusive run fails distinctly from the fail-on gate, even with real findings', async () => {
   const payload = await analyzeRun(
     {},
     {
-      violations: [],
+      violations: [{ severity: 'info' }, { severity: 'info' }],
       exitCode: 2,
       reportExtra: {
-        run: { reach: { isInconclusive: true, inconclusiveReasons: ['no rule source resolved'] } },
+        run: {
+          ruleSources: [
+            {
+              kind: 'profile',
+              identity: 'codeguard/csharp-all@1.2.0',
+              declaredIdentity: 'codeguard/csharp-all@9.9.9',
+              resolvedCount: 247,
+              isResolved: true,
+            },
+          ],
+          reach: {
+            configured: 247,
+            resolved: 247,
+            evaluated: 247,
+            unresolvedSources: [],
+            drift: [
+              {
+                kind: 'version-not-satisfied',
+                profile: 'codeguard/csharp-all',
+                requestedSpec: '9.9.9',
+                lockedVersion: '1.2.0',
+              },
+            ],
+            coreLibraryUnresolvedProjects: [],
+            isInconclusive: true,
+            inconclusiveReasons: ['config-lock-drift'],
+          },
+        },
       },
     }
   );
-  assert.match(failures[0], /inconclusive \(exit code 2\): no rule source resolved/);
+  assert.match(failures[0], /inconclusive \(exit code 2\): config-lock-drift/);
+  assert.match(failures[0], /codeguard\/csharp-all: config\.yml requests 9\.9\.9, the lock has 1\.2\.0/);
   assert.doesNotMatch(failures[0], /gate failed the build/);
   // The comment still renders (the report exists), calling the run out rather
-  // than reading as a quiet, healthy "0 findings".
-  assert.match(payload.summary, /\*\*Inconclusive run\*\* — no rule source resolved\./);
+  // than reading as a quiet "just some info findings, gate satisfied".
+  assert.match(payload.summary, /\*\*Inconclusive run\*\* — config-lock-drift\./);
+  assert.match(payload.summary, /- codeguard\/csharp-all: config\.yml requests 9\.9\.9, the lock has 1\.2\.0/);
 });
 
-test('analyze mode: a conclusive run with reach info surfaces it in the comment', async () => {
+test('analyze mode: a conclusive run surfaces rule-source reach in the comment', async () => {
   const payload = await analyzeRun(
     { INPUT_BADGE: 'true' },
     {
       reportExtra: {
-        run: { ruleSources: [{ kind: 'profile' }, { kind: 'rules-dir' }], reach: { resolvedRuleCount: 12 } },
+        run: {
+          ruleSources: [
+            { kind: 'profile', identity: 'codeguard/csharp-all@1.2.0', resolvedCount: 247, isResolved: true },
+            { kind: 'rules-directory', identity: '.codecharter/rules', resolvedCount: 7, isResolved: true },
+          ],
+          reach: {
+            configured: 247,
+            resolved: 254,
+            evaluated: 254,
+            unresolvedSources: [],
+            drift: [],
+            coreLibraryUnresolvedProjects: [],
+            isInconclusive: false,
+            inconclusiveReasons: [],
+          },
+        },
       },
     }
   );
-  assert.match(payload.summary, /_Reach: 2 rule source\(s\), 12 rule\(s\) resolved\._/);
+  assert.match(
+    payload.summary,
+    /_Reach: 254 rule\(s\) evaluated, 247 configured — 247 from codeguard\/csharp-all@1\.2\.0, 7 from \.codecharter\/rules\._/
+  );
 });
 
 test('analyze mode: an unknown mode fails before anything runs', async () => {
