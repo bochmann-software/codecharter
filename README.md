@@ -51,8 +51,9 @@ jobs:
 | `mode` | no | `analyze` | What this step runs: `analyze` for the rule analysis, `coverage` for the test-coverage gate (see below). The coverage inputs are listed at the end of this table |
 | `solution` | no | `''` (auto-discover) | Path to `.sln`, `.slnx`, or `.csproj` relative to the repo root. Leave empty to auto-discover (see below) |
 | `api-key` | yes | — | Your CodeCharter portal API key (see Setup) |
-| `rules` | no | `''` (auto) | Path to a local rules directory in your repo (e.g. `rules`). Leave empty to let the CLI use a `.codecharter/config.yml` profile and/or a `rules/` directory in the repo root if present, otherwise its bundled sample rules |
-| `require-rules` | no | `false` | Fail the run instead of falling back to the CLI's bundled sample rules when there is no rule source at all — no `rules` input, no `rules/` directory, and no `profiles:` in `.codecharter/config.yml`. A warning is logged on the bundled fallback regardless |
+| `rules` | no | `''` (auto) | Path to a local rules directory in your repo (e.g. `rules`), passed as `--rules`. With a CLI >= 1.6.4 this **adds** to whatever `.codecharter/config.yml` already resolves (`profiles:` and `rules:`); it no longer replaces it. Leave empty to let the CLI resolve rules from `.codecharter/config.yml` alone |
+| `rules-only` | no | `false` | Passed as `--rules-only`. Restricts the run to `rules` only, ignoring `profiles:`/`rules:` from `.codecharter/config.yml` — the exclusive behavior `rules` had before CLI 1.6.4. Requires `rules` to be set. Requires a CLI >= 1.6.4 (`version: latest`, the default, satisfies it) |
+| `require-rules` | no | `false` | Fail the run instead of only warning when no rule source resolves at all: no `rules` input, no `rules/` directory, and neither `profiles:` nor `rules:` in `.codecharter/config.yml`. This is a pre-flight check, independent of the CLI's own exit code 2 ("inconclusive") for a declared source that failed to resolve at runtime — see [Rules resolution](#rules-resolution) |
 | `fail-on` | no | `error` | Fail the run when violations reach this level (`error`, `warn`, `info`, `never`) |
 | `severity-threshold` | no | `info` | Minimum severity to report and annotate |
 | `diff` | no | `false` | Scope the run to changed lines only (see below). `true` takes the lines changed by the pull request or push; also accepts a git ref range (e.g. `main..HEAD`) or, in analyze mode, a path to a unified diff file. In coverage mode it turns on the changed-lines gate |
@@ -180,21 +181,66 @@ resolved correctly.
 
 ### Rules resolution
 
-When `rules` is set, that directory is passed to the CLI as `--rules` and must
-exist (a missing directory is a hard error). When `rules` is left empty, the CLI
-resolves rules itself: it runs any [profiles](#profiles-rule-sets-managed-in-the-portal)
-declared in `.codecharter/config.yml`, and/or a `rules/` directory in the
-repository root if one exists. Only when none of those is present does it fall
-back to the sample rules bundled with the CLI.
+**The preferred way (CLI >= 1.6.4): declare rules directories in
+`.codecharter/config.yml` under `rules:`**, paths relative to the repository
+root (the directory containing `.codecharter/`):
 
-That bundled-rules fallback is convenient for a first run but rarely what an
-established project wants, so the action logs a warning whenever it would happen
-— that is, only when there is no rule source at all. A repository that pins a
-profile in `.codecharter/config.yml` is a fully configured rule source, so no
-warning is logged and `require-rules: true` does not fail. Set
-`require-rules: true` to turn the bundled fallback into a hard failure instead —
-useful to guarantee a pipeline only ever runs against your own committed rules or
-a pinned profile.
+```yaml
+profiles:
+  - codecharter/csharp-all@1.4.2
+rules:
+  - rules # your own .ccr/.cgr rule files, alongside the profile above
+```
+
+This composes with `profiles:` in one analysis pass: profiles, then `rules:`
+directories, then the action's own `rules` input (see below) all resolve
+together, and a later source wins on a duplicate rule id — the CLI reports the
+shadowing. Leave the `rules` *input* empty and let the CLI resolve everything
+from config.yml alone; that is the one-pass setup this action recommends.
+
+**The `rules` input is additive, not exclusive, from CLI 1.6.4 on.** Passed as
+`--rules`, it now runs *alongside* whatever `.codecharter/config.yml` already
+resolves instead of replacing it. Set `rules-only: true` (passed as
+`--rules-only`) to restore the pre-1.6.4 exclusive behavior — only the `rules`
+input's directories run, `profiles:`/`rules:` from config.yml are ignored.
+`rules-only: true` requires `rules` to be set; the action fails fast with an
+actionable message otherwise, before spending the CLI download on a run that
+would itself exit 2.
+
+**Migration note for a two-pass workflow.** Before 1.6.4, a repository running
+the action twice — once for its portal profile, once more with `rules:
+.codecharter/rules` for its own conventions — got two independent passes
+because `rules` replaced the profile entirely on the second run. From 1.6.4 on,
+`rules` *adds* to the profile, so that second pass would double-count the
+profile's findings. Collapse this to one pass: add
+`rules: [.codecharter/rules]` to `.codecharter/config.yml` and remove the
+second step, so one `analyze` run covers both the profile and your own rules.
+Until you do, either pin that step's CLI `version` below 1.6.4, or add
+`rules-only: true` to it, to keep the two passes independent while you migrate.
+
+**Minimum CLI version.** The `rules:` config key and the additive `rules`
+input both require CLI >= 1.6.4 (`version: latest`, the default, satisfies
+it). An older, pinned CLI silently ignores an unknown `rules:` key in
+config.yml, and treats the `rules` input as exclusive (the pre-1.6.4
+behavior) — check the CLI's own `--help` for the version you pin if in doubt.
+
+When none of `rules`, a `rules:` config key, and a `profiles:` config key
+resolve anything, and no `rules/` directory exists in the repository root
+either, CodeCharter has no rule source to run against. The action warns in
+that case (a CLI < 1.6.4 additionally falls back to its own bundled sample
+rules there; 1.6.4 removed that fallback along with the implicit,
+undeclared-`rules/`-directory lookup — either must now be declared under
+`rules:` in config.yml, or the `rules` input must point at it). Set
+`require-rules: true` to turn that warning into a hard failure instead —
+useful to guarantee a pipeline only ever runs against your own committed rules
+or a pinned profile. This is a pre-flight check the action makes before
+invoking the CLI at all, so it is not a duplicate of the CLI's own exit code 2
+("inconclusive", CLI >= 1.6.4): that one instead catches a *declared* source
+that ultimately failed to resolve at runtime (a stale `codecharter.lock.json`,
+a config pin drift, an unreachable portal, …) — something this pre-flight
+check cannot see ahead of time. Both can fire independently, for different
+reasons, and the action reports each with its own distinct message so an
+inconclusive run is never mistaken for "0 findings, gate satisfied".
 
 ### Profiles (rule sets managed in the portal)
 

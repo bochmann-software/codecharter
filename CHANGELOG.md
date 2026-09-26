@@ -7,6 +7,36 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Added
+
+- New `rules-only` input, passed to the CLI as `--rules-only`. It restricts
+  the run to the `rules` input's directories only, ignoring `profiles:` and
+  `rules:` from `.codecharter/config.yml` — the exclusive behavior `rules` had
+  before CLI 1.6.4. Requires `rules` to be set; the action fails fast with an
+  actionable message otherwise, before spending the CLI download on a run that
+  would itself exit 2 for the same reason.
+- An inconclusive run (CLI >= 1.6.4, exit code 2 with `run.reach.isInconclusive`
+  in the JSON report) now fails with its own distinct message — the
+  `inconclusiveReasons` codes (e.g. `config-lock-drift`) plus any
+  `run.reach.drift` detail (which profile, the version config.yml requests
+  vs. what the lock has) — instead of being read as the `fail-on` gate
+  tripping on zero findings. The comment/summary surface the same detail, and
+  a conclusive run's comment lists each `run.ruleSources` entry with its
+  resolved count (e.g. "247 from codeguard/csharp-all@1.2.0, 7 from
+  .codecharter/rules") alongside the configured/resolved/evaluated totals from
+  `run.reach`.
+
+### Changed
+
+- The `rules` input is now additive rather than exclusive when the CLI is
+  >= 1.6.4: it runs alongside whatever `.codecharter/config.yml` already
+  resolves (`profiles:` and `rules:`) instead of replacing it. See the README,
+  section "Rules resolution", including the migration note for a two-pass
+  workflow that pinned rules and a profile as two separate steps.
+- `require-rules`'s pre-flight "no rule source at all" check now also
+  recognizes a `rules:` list in `.codecharter/config.yml` (CLI >= 1.6.4) as a
+  configured rule source, alongside `profiles:` and a local `rules/` directory.
+
 ## [1.10.0] - 2026-09-25
 
 ### Added

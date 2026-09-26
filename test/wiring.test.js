@@ -281,7 +281,7 @@ test('coverage mode: falls back to the workflow-token comment when the portal de
 
 // Drives run() in analyze mode against a stubbed download/extract/CLI, and
 // returns the payload posted to the portal.
-async function analyzeRun(inputs = {}, { violations = [{ severity: 'error' }], exitCode = 0 } = {}) {
+async function analyzeRun(inputs = {}, { violations = [{ severity: 'error' }], exitCode = 0, reportExtra = {} } = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-ws-'));
   fs.writeFileSync(path.join(workspace, 'App.sln'), '');
   fs.mkdirSync(path.join(workspace, 'rules'));
@@ -309,7 +309,7 @@ async function analyzeRun(inputs = {}, { violations = [{ severity: 'error' }], e
     if (cmd === 'git') return fakeGit(args, opts);
     cliArgs = args;
     const jsonArg = args.find((a) => typeof a === 'string' && a.startsWith('json:'));
-    fs.writeFileSync(jsonArg.slice('json:'.length), JSON.stringify({ violations }));
+    fs.writeFileSync(jsonArg.slice('json:'.length), JSON.stringify({ violations, ...reportExtra }));
     return exitCode;
   };
 
@@ -362,6 +362,111 @@ test('analyze mode: fail-on never reports the findings without failing', async (
   const payload = await analyzeRun({ INPUT_BADGE: 'true', 'INPUT_FAIL-ON': 'never' }, { exitCode: 1 });
   assert.equal(payload.conclusion, 'neutral');
   assert.deepEqual(failures, []);
+});
+
+// ---------------------------------------------------------------------------
+// additive `rules` / `rules-only` (CLI >= 1.6.4)
+// ---------------------------------------------------------------------------
+
+test('analyze mode: rules is passed through as --rules, additive by default (no --rules-only)', async () => {
+  await analyzeRun({ INPUT_RULES: 'my-rules' });
+  assert.ok(cliArgs.includes('--rules'));
+  assert.ok(cliArgs.some((a) => typeof a === 'string' && a.endsWith(path.join('my-rules'))));
+  assert.ok(!cliArgs.includes('--rules-only'));
+});
+
+test('analyze mode: rules-only: true adds --rules-only alongside --rules', async () => {
+  await analyzeRun({ INPUT_RULES: 'my-rules', 'INPUT_RULES-ONLY': 'true' });
+  assert.ok(cliArgs.includes('--rules'));
+  assert.ok(cliArgs.includes('--rules-only'));
+});
+
+test('analyze mode: rules-only: true without rules fails before the CLI runs', async () => {
+  await analyzeRun({ 'INPUT_RULES-ONLY': 'true' });
+  assert.match(failures[0], /`rules-only: true` requires `rules` to be set/);
+  assert.equal(cliArgs, null, 'the CLI must never be invoked');
+  assert.deepEqual(posts, []);
+});
+
+// ---------------------------------------------------------------------------
+// inconclusive runs (CLI >= 1.6.4's run.reach.isInconclusive)
+// ---------------------------------------------------------------------------
+
+test('analyze mode: an inconclusive run fails distinctly from the fail-on gate, even with real findings', async () => {
+  const payload = await analyzeRun(
+    {},
+    {
+      violations: [{ severity: 'info' }, { severity: 'info' }],
+      exitCode: 2,
+      reportExtra: {
+        run: {
+          ruleSources: [
+            {
+              kind: 'profile',
+              identity: 'codeguard/csharp-all@1.2.0',
+              declaredIdentity: 'codeguard/csharp-all@9.9.9',
+              resolvedCount: 247,
+              isResolved: true,
+            },
+          ],
+          reach: {
+            configured: 247,
+            resolved: 247,
+            evaluated: 247,
+            unresolvedSources: [],
+            drift: [
+              {
+                kind: 'version-not-satisfied',
+                profile: 'codeguard/csharp-all',
+                requestedSpec: '9.9.9',
+                lockedVersion: '1.2.0',
+              },
+            ],
+            coreLibraryUnresolvedProjects: [],
+            isInconclusive: true,
+            inconclusiveReasons: ['config-lock-drift'],
+          },
+        },
+      },
+    }
+  );
+  assert.match(failures[0], /inconclusive \(exit code 2\): config-lock-drift/);
+  assert.match(failures[0], /codeguard\/csharp-all: config\.yml requests 9\.9\.9, the lock has 1\.2\.0/);
+  assert.doesNotMatch(failures[0], /gate failed the build/);
+  // The comment still renders (the report exists), calling the run out rather
+  // than reading as a quiet "just some info findings, gate satisfied".
+  assert.match(payload.summary, /\*\*Inconclusive run\*\* — config-lock-drift\./);
+  assert.match(payload.summary, /- codeguard\/csharp-all: config\.yml requests 9\.9\.9, the lock has 1\.2\.0/);
+});
+
+test('analyze mode: a conclusive run surfaces rule-source reach in the comment', async () => {
+  const payload = await analyzeRun(
+    { INPUT_BADGE: 'true' },
+    {
+      reportExtra: {
+        run: {
+          ruleSources: [
+            { kind: 'profile', identity: 'codeguard/csharp-all@1.2.0', resolvedCount: 247, isResolved: true },
+            { kind: 'rules-directory', identity: '.codecharter/rules', resolvedCount: 7, isResolved: true },
+          ],
+          reach: {
+            configured: 247,
+            resolved: 254,
+            evaluated: 254,
+            unresolvedSources: [],
+            drift: [],
+            coreLibraryUnresolvedProjects: [],
+            isInconclusive: false,
+            inconclusiveReasons: [],
+          },
+        },
+      },
+    }
+  );
+  assert.match(
+    payload.summary,
+    /_Reach: 254 rule\(s\) evaluated, 247 configured — 247 from codeguard\/csharp-all@1\.2\.0, 7 from \.codecharter\/rules\._/
+  );
 });
 
 test('analyze mode: an unknown mode fails before anything runs', async () => {

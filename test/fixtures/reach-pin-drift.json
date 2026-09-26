@@ -1,0 +1,66 @@
+{
+  "summary": {
+    "totalViolations": 2,
+    "totalTypes": 80,
+    "totalMethods": 167,
+    "durationMs": 13007
+  },
+  "run": {
+    "analysisUnit": "src/Sample.App/Sample.App.csproj",
+    "analysisUnitKind": "project",
+    "configPath": ".codecharter/config.yml",
+    "lockfilePath": ".codecharter/codecharter.lock.json",
+    "ruleSources": [
+      {
+        "kind": "profile",
+        "identity": "codeguard/csharp-all@1.2.0",
+        "declaredIdentity": "codeguard/csharp-all@9.9.9",
+        "configuredCount": 247,
+        "resolvedCount": 247,
+        "shadowedCount": 0,
+        "isResolved": true
+      }
+    ],
+    "reach": {
+      "configured": 247,
+      "resolved": 247,
+      "evaluated": 247,
+      "unresolvedSources": [],
+      "drift": [
+        {
+          "kind": "version-not-satisfied",
+          "profile": "codeguard/csharp-all",
+          "requestedSpec": "9.9.9",
+          "lockedVersion": "1.2.0"
+        }
+      ],
+      "coreLibraryUnresolvedProjects": [],
+      "isInconclusive": true,
+      "inconclusiveReasons": ["config-lock-drift"]
+    }
+  },
+  "violations": [
+    {
+      "ruleId": "namespace-distance",
+      "ruleName": "Namespace far from main sequence",
+      "severity": "info",
+      "category": "Architecture",
+      "entityName": "Sample.App",
+      "entityKind": "Namespace",
+      "message": "Namespace far from main sequence: Sample.App",
+      "fingerprint": "b0fb6cd0420320bca9580b6d2d770b3e"
+    },
+    {
+      "ruleId": "missing-xml-doc",
+      "ruleName": "Public member missing XML documentation",
+      "severity": "info",
+      "category": "Documentation",
+      "entityName": "Sample.App.Internal.ServiceCollectionExtensions",
+      "entityKind": "Class",
+      "filePath": "src/Sample.App/Internal/ServiceCollectionExtensions.cs",
+      "lineNumber": 3,
+      "message": "Public member missing XML documentation: Sample.App.Internal.ServiceCollectionExtensions",
+      "fingerprint": "409a21dc7dc0f4d64bd60e7430e474ec"
+    }
+  ]
+}
