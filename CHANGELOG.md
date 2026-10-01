@@ -9,6 +9,14 @@ the latest release in its line.
 
 ### Added
 
+- New `affected-by` input for coverage mode. When `true`, the action passes
+  `--affected-by` to `codecharter coverage` with the same range as
+  `--git-ref`, so a pull request runs only the test projects the change
+  affects and gates the changed lines. It needs `diff` (`true` or a range) and
+  fails fast with an actionable message without one, or together with
+  `skip-tests`, which the CLI rejects. On an event where `diff: true` finds no
+  range it is ignored with a warning. Requires a CLI with `coverage
+  --affected-by` (`version: latest` satisfies it).
 - New `rules-only` input, passed to the CLI as `--rules-only`. It restricts
   the run to the `rules` input's directories only, ignoring `profiles:` and
   `rules:` from `.codecharter/config.yml` — the exclusive behavior `rules` had

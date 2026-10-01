@@ -468,12 +468,35 @@ async function resolveDiffArgs(diffInput, workspace, tmp) {
  * touching git or the network, so a configuration error fails the step before
  * the CLI is downloaded. Rejects an invalid `min-diff-coverage`, a diff file
  * (the coverage verb gates a ref range, not a file), a value that is neither
- * keyword nor range, and `min-diff-coverage` while `diff` is off (the gate it
- * asks for could never run). Returns true when the inputs are usable; otherwise
+ * keyword nor range, `min-diff-coverage` while `diff` is off (the gate it
+ * asks for could never run), and `affected-by` without a range or together with
+ * `skip-tests` (`affected` carries both inputs). Returns true when the inputs are usable; otherwise
  * reports the failure and returns false.
  */
-function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
+function validateCoverageDiffInputs(diffInput, minDiffInput, workspace, affected = {}) {
   const minDiff = (minDiffInput || '').trim();
+  const affectedBy = (affected.affectedBy || '').trim().toLowerCase();
+  if (affectedBy && affectedBy !== 'true' && affectedBy !== 'false') {
+    core.setFailed(`Invalid \`affected-by\` "${affected.affectedBy.trim()}". Use \`true\` or \`false\`.`);
+    return false;
+  }
+  if (affectedBy === 'true') {
+    if (affected.skipTests) {
+      core.setFailed(
+        '`affected-by` cannot be combined with `skip-tests`: the CLI selects the affected test projects to run, ' +
+          'and `skip-tests` runs none. What to do: remove `skip-tests`, or set `affected-by: false`.'
+      );
+      return false;
+    }
+    const range = (diffInput || '').trim().toLowerCase();
+    if (!range || range === 'false') {
+      core.setFailed(
+        '`affected-by` is `true`, but `diff` is off, so there is no change range to select test projects from. ' +
+          'What to do: set `diff: true` (or a git ref range), or set `affected-by: false`.'
+      );
+      return false;
+    }
+  }
   if (minDiff && !isPercentInput(minDiff)) {
     core.setFailed(
       `Invalid \`min-diff-coverage\` "${minDiff}". Use a number from 0 to 100 with a dot as the decimal ` +
@@ -558,18 +581,22 @@ function isPercentInput(value) {
  * requests and pushes.
  */
 async function resolveCoverageDiffArgs(options, workspace) {
-  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace)) return null;
+  const affected = { affectedBy: options.affectedBy, skipTests: options.skipTests };
+  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace, affected)) return null;
   const minDiff = (options.minDiffCoverage || '').trim();
 
+  const wantsAffected = (options.affectedBy || '').trim().toLowerCase() === 'true';
   const resolved = await resolveCoverageGitRef(options.diff, workspace);
   if (resolved === null) return null;
   if (!resolved.gitRef) {
     if (minDiff) core.warning('`min-diff-coverage` is ignored because no diff gate runs on this event.');
+    if (wantsAffected) core.warning('`affected-by` is ignored because no change range resolves on this event.');
     return [];
   }
 
   const args = ['--git-ref', resolved.gitRef];
   if (minDiff) args.push('--min-diff-coverage', minDiff);
+  if (wantsAffected) args.push('--affected-by', resolved.gitRef);
   return args;
 }
 
@@ -1779,7 +1806,13 @@ async function run() {
   }
 
   // A misconfigured changed-lines gate fails here, before the CLI download.
-  if (mode === 'coverage' && !validateCoverageDiffInputs(diffInput, core.getInput('min-diff-coverage'), workspace)) {
+  if (
+    mode === 'coverage' &&
+    !validateCoverageDiffInputs(diffInput, core.getInput('min-diff-coverage'), workspace, {
+      affectedBy: core.getInput('affected-by'),
+      skipTests: (core.getInput('skip-tests') || 'false').toLowerCase() === 'true',
+    })
+  ) {
     return;
   }
 
@@ -1827,6 +1860,7 @@ async function run() {
           minCoverage: core.getInput('min-coverage'),
           diff: diffInput,
           minDiffCoverage: core.getInput('min-diff-coverage'),
+          affectedBy: core.getInput('affected-by'),
           skipTests: (core.getInput('skip-tests') || 'false').toLowerCase() === 'true',
           resultsRoot: core.getInput('results-root'),
           failOnThreshold: (core.getInput('fail-on-threshold') || 'true').toLowerCase() !== 'false',

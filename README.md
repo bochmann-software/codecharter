@@ -70,6 +70,7 @@ jobs:
 | `coverage-root` | no | `''` (repo root) | Coverage mode only. Directory tree searched for test projects |
 | `min-coverage` | no | `''` (repo config) | Coverage mode only. Minimum required line coverage (0-100), e.g. `99.5`. Overrides `coverage.minimum-percent` from `.codecharter/config.yml` for this run |
 | `min-diff-coverage` | no | `''` (effective `min-coverage`) | Coverage mode only. Minimum required coverage of the changed lines (0-100), e.g. `100`. Needs `diff`; the changed-lines gate then decides the result and whole-solution coverage is only reported (see below) |
+| `affected-by` | no | `false` | Coverage mode only. Run only the test projects affected by the change (`--affected-by` with the same range as `--git-ref`) instead of all of them. Needs `diff`; cannot be combined with `skip-tests` (see below) |
 | `skip-tests` | no | `false` | Coverage mode only. Analyze the coverage files already present under the results root instead of running the tests |
 | `results-root` | no | `''` (CLI default) | Coverage mode only. Directory for test and coverage artifacts |
 | `fail-on-threshold` | no | `true` | Coverage mode only. Set `false` to report coverage below the minimum without failing the step (with `diff`, the changed-lines minimum). Failing tests, missing data and config errors still fail |
@@ -164,6 +165,45 @@ CLI cannot resolve.
 failing, exactly as it does for the whole-solution minimum. The `badge` payload
 keeps reporting whole-solution coverage. Requires a CLI with changed-line
 coverage; the default `version: latest` satisfies it.
+
+#### Testing only the affected projects
+
+On a pull request, `affected-by: true` runs only the test projects the change
+reaches, and the changed-lines gate then covers exactly those runs. The action
+passes `--affected-by` with the same range as `--git-ref`, so it needs `diff`
+(`true` or a range); without one the step fails before the CLI is downloaded.
+It cannot be combined with `skip-tests`, because the CLI picks the projects to
+run and `skip-tests` runs none. On an event where `diff: true` finds no range
+(`workflow_dispatch`, `schedule`, ...) it is ignored with a warning and every
+test project runs. Keep full runs on pushes to your release branches:
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: bochmann-software/codecharter@v1
+        with:
+          mode: coverage
+          diff: ${{ github.event_name == 'pull_request' }}
+          affected-by: ${{ github.event_name == 'pull_request' }}
+          min-diff-coverage: 100
+          api-key: ${{ secrets.CODECHARTER_API_KEY }}
+```
+
+Requires a CLI that supports `coverage --affected-by`; the default
+`version: latest` satisfies it.
 
 ### Solution auto-discovery
 

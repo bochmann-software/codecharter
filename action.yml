@@ -202,6 +202,18 @@ inputs:
       Requires a CLI with changed-line coverage (`version: latest` satisfies it).
     required: false
     default: ''
+  affected-by:
+    description: |
+      Coverage mode only. When `true`, run only the test projects affected by the
+      change instead of every test project: the action passes `--affected-by` with
+      the same range as `--git-ref` (`diff: true` or an explicit range), and the
+      changed-lines gate still applies. Meant for pull requests; keep full runs on
+      pushes. Needs `diff` (fails the step otherwise, and is ignored with a warning
+      on an event where `diff: true` finds no range) and cannot be combined with
+      `skip-tests`. Requires a CLI that supports `coverage --affected-by`
+      (`version: latest` satisfies it).
+    required: false
+    default: 'false'
   skip-tests:
     description: |
       Coverage mode only. When `true`, do not run the tests; analyze the coverage
