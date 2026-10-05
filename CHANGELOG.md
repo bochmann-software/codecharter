@@ -40,6 +40,16 @@ the latest release in its line.
 
 ### Changed
 
+- An inconclusive run now deliberately overrides `fail-on: never`: the App
+  check concludes `failure` and the step fails, even when the CLI exits 0. The
+  PR comment and step summary say the check fails regardless of `fail-on` and
+  no longer show a green `issues: 0` badge. A report carrying
+  `inconclusiveReasons` counts as inconclusive even without the
+  `isInconclusive` flag, and a report without a `violations` array is treated
+  like a missing report (no check is posted, the step fails). The SARIF file
+  at `sarif-output` is deleted before the CLI runs so a stale one can never be
+  uploaded. New `inconclusive` output (`true`/`false`).
+
 - The `rules` input is now additive rather than exclusive when the CLI is
   >= 1.6.4: it runs alongside whatever `.codecharter/config.yml` already
   resolves (`profiles:` and `rules:`) instead of replacing it. See the README,

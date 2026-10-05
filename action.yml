@@ -70,7 +70,10 @@ inputs:
     required: false
     default: 'false'
   fail-on:
-    description: Exit with a failure when any violation reaches this level (error | warn | info | never).
+    description: |
+      Exit with a failure when any violation reaches this level (error | warn | info | never).
+      An inconclusive run (the rule sources could not be established) fails regardless of this
+      value, including with `never`.
     required: false
     default: 'error'
   severity-threshold:
@@ -263,7 +266,9 @@ outputs:
   findings-info:
     description: Number of info-level findings.
   sarif-path:
-    description: Path to the generated SARIF file, if sarif-output was set.
+    description: Path to the generated SARIF file, if sarif-output was set. Unset when the run is inconclusive (the file is removed).
+  inconclusive:
+    description: "'true' when the run was inconclusive (the rule sources could not be established), 'false' otherwise. Empty when no report was produced."
 
 runs:
   using: node24

@@ -229,6 +229,16 @@ test('locationLink: without line number links the file only', () => {
 
 const counts = (error, warn, info) => ({ total: error + warn + info, error, warn, info });
 
+test('footerLine: an inconclusive run fails regardless of fail-on', () => {
+  for (const f of ['never', 'error', 'info']) {
+    assert.match(
+      footerLine(f, counts(0, 0, 0), { isInconclusive: true, reasons: [] }),
+      /fails regardless of `fail-on`/
+    );
+  }
+  assert.match(footerLine('never', counts(0, 0, 0), { isInconclusive: false, reasons: [] }), /does not fail the check/);
+});
+
 test('footerLine: never → reporting-only note regardless of counts', () => {
   assert.match(footerLine('never', counts(5, 5, 5)), /does not fail the check/);
 });
