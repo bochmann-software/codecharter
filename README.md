@@ -425,6 +425,12 @@ machine-readable JSON report used to set the outputs above and a sticky PR
 summary comment, and — when `sarif-output` is set — a SARIF file for Code
 Scanning. Disable the comment with `comment: false` to keep annotations only.
 
+An inconclusive run (the CLI could not establish that its rule sources
+resolved) is never reported as a pass: the App check concludes `failure` titled
+`Inconclusive: <reason>` whatever `fail-on` says, no badge is sent, and no SARIF
+file is left behind (`sarif-path` stays unset), so it cannot close open Code
+Scanning alerts.
+
 ### Branded checks via the CodeCharter App (recommended)
 
 If you install the **CodeCharter GitHub App** on your repository (and link it to

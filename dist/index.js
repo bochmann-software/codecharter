@@ -71015,13 +71015,15 @@ ${markdown}`;
     );
   }
 }
-function conclusionFor(failOn, counts) {
+function conclusionFor(failOn, counts, reach) {
+  if (reach && reach.isInconclusive) return "failure";
   const f = (failOn || "").toLowerCase();
   if (f === "never") return "neutral";
   const blocking = f === "error" ? counts.error : f === "warn" || f === "warning" ? counts.error + counts.warn : counts.total;
   return blocking > 0 ? "failure" : "success";
 }
-function titleFor(counts) {
+function titleFor(counts, reach) {
+  if (reach && reach.isInconclusive) return `Inconclusive: ${reach.reasons[0] || "no reason was reported"}`;
   return counts.total === 0 ? "No findings" : `${counts.error} error, ${counts.warn} warning, ${counts.info} info`;
 }
 async function publishViaPortal(portal, apiKey, payload) {
@@ -71422,13 +71424,21 @@ async function run() {
       listeners: { stdout: append, stderr: append }
     });
     const report = readJson(jsonPath);
+    const reach = report ? reachFromReport(report) : null;
+    const inconclusive = reach !== null && reach.isInconclusive;
     if (report) {
       const counts = tally(report);
       core.setOutput("findings-total", counts.total);
       core.setOutput("findings-error", counts.error);
       core.setOutput("findings-warn", counts.warn);
       core.setOutput("findings-info", counts.info);
-      if (sarifPath) core.setOutput("sarif-path", sarifPath);
+      let sarifSkipped = false;
+      if (sarifPath && inconclusive) {
+        fs10.rmSync(sarifPath, { force: true });
+        sarifSkipped = true;
+      } else if (sarifPath) {
+        core.setOutput("sarif-path", sarifPath);
+      }
       const repoFull = process.env.GITHUB_REPOSITORY || `${github.context.repo.owner}/${github.context.repo.repo}`;
       const sha = github.context.payload.pull_request?.head?.sha || github.context.sha;
       const solutionKey = path14.relative(workspace, path14.resolve(workspace, solution)).split(path14.sep).join("/");
@@ -71441,7 +71451,12 @@ async function run() {
         titleSuffix,
         failOn
       });
-      await writeSummary(markdown);
+      await writeSummary(
+        sarifSkipped ? `${markdown}
+
+> The SARIF file was not produced: this run was inconclusive, and uploading it would close open Code Scanning alerts the run could not re-evaluate.
+` : markdown
+      );
       const published = await publishViaPortal(
         portal,
         apiKey,
@@ -71451,14 +71466,15 @@ async function run() {
             headSha: sha,
             pullNumber: github.context.payload.pull_request?.number ?? null,
             checkName: titleSuffix ? `CodeCharter / ${titleSuffix}` : "CodeCharter",
-            conclusion: conclusionFor(failOn, counts),
-            title: titleFor(counts),
+            conclusion: conclusionFor(failOn, counts, reach),
+            title: titleFor(counts, reach),
             summary: markdown,
             annotations: [],
             comment: wantComment,
             commentKey: discriminator
           },
-          wantBadge,
+          // No badge for an inconclusive run: its counts are not a result.
+          wantBadge && !inconclusive,
           () => analysisBadgePayload(counts)
         )
       );
@@ -71466,7 +71482,7 @@ async function run() {
         await upsertComment(githubToken, commentMarker(discriminator), markdown);
       }
     }
-    if (code !== 0) {
+    if (code !== 0 || inconclusive) {
       if (/Path to dotnet executable is not set|Microsoft\.Build\.Locator|MSBuildLocator/i.test(output)) {
         core.error(
           `CodeCharter could not find a .NET SDK on the runner (needed to load the solution via MSBuild). What to do: add a setup step before this action, e.g.:
@@ -71486,8 +71502,7 @@ See the action README, section "Requirements".`
 See the action README, section "Inputs".`
         );
       }
-      const reach = report && reachFromReport(report);
-      if (reach && reach.isInconclusive) {
+      if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
         const driftDetail = formatDrift(reach.drift).join("; ");
         core.setFailed(

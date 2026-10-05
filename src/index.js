@@ -1354,8 +1354,15 @@ async function upsertComment(token, marker, markdown) {
   }
 }
 
-/** GitHub check conclusion derived from the fail-on policy and counts. */
-function conclusionFor(failOn, counts) {
+/**
+ * GitHub check conclusion derived from the fail-on policy and counts. An
+ * inconclusive run (`reach.isInconclusive`) is always a failure, whatever the
+ * counts or `fail-on` say: zero findings from a run that could not establish
+ * its rule sources is not a pass, and a branch protection rule that requires
+ * the App's check must not be satisfiable by it.
+ */
+function conclusionFor(failOn, counts, reach) {
+  if (reach && reach.isInconclusive) return 'failure';
   const f = (failOn || '').toLowerCase();
   if (f === 'never') return 'neutral';
   const blocking =
@@ -1363,8 +1370,9 @@ function conclusionFor(failOn, counts) {
   return blocking > 0 ? 'failure' : 'success';
 }
 
-/** Short check-run title summarizing the counts. */
-function titleFor(counts) {
+/** Short check-run title summarizing the counts, or the first inconclusive reason. */
+function titleFor(counts, reach) {
+  if (reach && reach.isInconclusive) return `Inconclusive: ${reach.reasons[0] || 'no reason was reported'}`;
   return counts.total === 0 ? 'No findings' : `${counts.error} error, ${counts.warn} warning, ${counts.info} info`;
 }
 
@@ -1957,13 +1965,26 @@ async function run() {
     // Report findings regardless of the exit code, so they still surface when
     // fail-on trips the gate (a non-zero exit with real findings).
     const report = readJson(jsonPath);
+    const reach = report ? reachFromReport(report) : null;
+    const inconclusive = reach !== null && reach.isInconclusive;
     if (report) {
       const counts = tally(report);
       core.setOutput('findings-total', counts.total);
       core.setOutput('findings-error', counts.error);
       core.setOutput('findings-warn', counts.warn);
       core.setOutput('findings-info', counts.info);
-      if (sarifPath) core.setOutput('sarif-path', sarifPath);
+
+      // An inconclusive run (CLI >= 1.6.4) cannot vouch for its rule sources, so
+      // its SARIF must not reach Code Scanning: uploaded under the main category
+      // it would close every open alert the run failed to re-evaluate. The file
+      // is removed and `sarif-path` is left unset, so no upload step can pick it up.
+      let sarifSkipped = false;
+      if (sarifPath && inconclusive) {
+        fs.rmSync(sarifPath, { force: true });
+        sarifSkipped = true;
+      } else if (sarifPath) {
+        core.setOutput('sarif-path', sarifPath);
+      }
 
       const repoFull = process.env.GITHUB_REPOSITORY || `${github.context.repo.owner}/${github.context.repo.repo}`;
       const sha = github.context.payload.pull_request?.head?.sha || github.context.sha;
@@ -1986,7 +2007,12 @@ async function run() {
         titleSuffix,
         failOn,
       });
-      await writeSummary(markdown);
+      await writeSummary(
+        sarifSkipped
+          ? `${markdown}\n\n> The SARIF file was not produced: this run was inconclusive, and uploading it would ` +
+              'close open Code Scanning alerts the run could not re-evaluate.\n'
+          : markdown
+      );
 
       // Prefer publishing as the CodeCharter App via the portal: a branded check
       // run + comment, no GitHub token on the runner and no pull-requests: write
@@ -2002,14 +2028,15 @@ async function run() {
             headSha: sha,
             pullNumber: github.context.payload.pull_request?.number ?? null,
             checkName: titleSuffix ? `CodeCharter / ${titleSuffix}` : 'CodeCharter',
-            conclusion: conclusionFor(failOn, counts),
-            title: titleFor(counts),
+            conclusion: conclusionFor(failOn, counts, reach),
+            title: titleFor(counts, reach),
             summary: markdown,
             annotations: [],
             comment: wantComment,
             commentKey: discriminator,
           },
-          wantBadge,
+          // No badge for an inconclusive run: its counts are not a result.
+          wantBadge && !inconclusive,
           () => analysisBadgePayload(counts)
         )
       );
@@ -2019,7 +2046,9 @@ async function run() {
       }
     }
 
-    if (code !== 0) {
+    // An inconclusive report fails the step even on exit code 0, matching the
+    // failing check run it produced above.
+    if (code !== 0 || inconclusive) {
       if (/Path to dotnet executable is not set|Microsoft\.Build\.Locator|MSBuildLocator/i.test(output)) {
         core.error(
           'CodeCharter could not find a .NET SDK on the runner (needed to load the solution via MSBuild). ' +
@@ -2049,8 +2078,7 @@ async function run() {
       // declared one failed to (stale lock, config pin drift, …). Report it as
       // its own failure mode, independent of `fail-on`/`fail-on: never`, so it
       // is never mistaken for "0 findings, gate satisfied".
-      const reach = report && reachFromReport(report);
-      if (reach && reach.isInconclusive) {
+      if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(', ') : 'no reason was reported';
         const driftDetail = formatDrift(reach.drift).join('; ');
         core.setFailed(
