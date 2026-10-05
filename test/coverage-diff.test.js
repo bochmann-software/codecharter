@@ -236,6 +236,74 @@ test('resolveCoverageDiffArgs: a minimum on an event without a range is ignored 
   assert.deepEqual(failures, []);
 });
 
+test('resolveCoverageDiffArgs: affected-by passes the same range as --git-ref', async () => {
+  const args = await resolveCoverageDiffArgs(
+    { diff: 'origin/main..HEAD', minDiffCoverage: '100', affectedBy: ' True ' },
+    workspace
+  );
+  assert.deepEqual(args, [
+    '--git-ref',
+    'origin/main..HEAD',
+    '--min-diff-coverage',
+    '100',
+    '--affected-by',
+    'origin/main..HEAD',
+  ]);
+});
+
+test('resolveCoverageDiffArgs: affected-by with diff: true uses the resolved pull request range', async () => {
+  github.context.eventName = 'pull_request';
+  github.context.payload = { pull_request: { base: { sha: 'BASE' }, head: { sha: 'HEAD' } } };
+  const args = await resolveCoverageDiffArgs({ diff: 'true', affectedBy: 'true' }, workspace);
+  assert.equal(args[0], '--git-ref');
+  assert.equal(args[2], '--affected-by');
+  assert.equal(args[3], args[1]);
+  assert.deepEqual(failures, []);
+});
+
+test('resolveCoverageDiffArgs: affected-by false or empty adds nothing', async () => {
+  assert.deepEqual(await resolveCoverageDiffArgs({ diff: 'a..b', affectedBy: 'false' }, workspace), [
+    '--git-ref',
+    'a..b',
+  ]);
+  assert.deepEqual(await resolveCoverageDiffArgs({ diff: 'a..b', affectedBy: '' }, workspace), ['--git-ref', 'a..b']);
+});
+
+test('resolveCoverageDiffArgs: affected-by without a range is a configuration error', async () => {
+  for (const diff of [undefined, '', 'false']) {
+    failures = [];
+    assert.equal(await resolveCoverageDiffArgs({ diff, affectedBy: 'true' }, workspace), null);
+    assert.deepEqual(failures, [
+      '`affected-by` is `true`, but `diff` is off, so there is no change range to select test projects from. ' +
+        'What to do: set `diff: true` (or a git ref range), or set `affected-by: false`.',
+    ]);
+  }
+});
+
+test('resolveCoverageDiffArgs: affected-by together with skip-tests is rejected', async () => {
+  assert.equal(await resolveCoverageDiffArgs({ diff: 'a..b', affectedBy: 'true', skipTests: true }, workspace), null);
+  assert.match(failures[0], /^`affected-by` cannot be combined with `skip-tests`/);
+  failures = [];
+  assert.deepEqual(await resolveCoverageDiffArgs({ diff: 'a..b', affectedBy: 'false', skipTests: true }, workspace), [
+    '--git-ref',
+    'a..b',
+  ]);
+  assert.deepEqual(failures, []);
+});
+
+test('resolveCoverageDiffArgs: an invalid affected-by value is rejected', async () => {
+  assert.equal(await resolveCoverageDiffArgs({ diff: 'a..b', affectedBy: 'yes' }, workspace), null);
+  assert.deepEqual(failures, ['Invalid `affected-by` "yes". Use `true` or `false`.']);
+});
+
+test('resolveCoverageDiffArgs: affected-by on an event without a range is ignored with a warning', async () => {
+  github.context.eventName = 'schedule';
+  assert.deepEqual(await resolveCoverageDiffArgs({ diff: 'true', affectedBy: 'true' }, workspace), []);
+  assert.equal(warnings.length, 2);
+  assert.equal(warnings[1], '`affected-by` is ignored because no change range resolves on this event.');
+  assert.deepEqual(failures, []);
+});
+
 test('resolveCoverageDiffArgs: an invalid diff value stops the run', async () => {
   assert.equal(await resolveCoverageDiffArgs({ diff: 'main' }, workspace), null);
   assert.match(failures[0], /^Invalid `diff` input "main" for coverage mode/);
@@ -421,6 +489,7 @@ test('validateCoverageDiffInputs: usable inputs pass without touching git', () =
   assert.equal(validateCoverageDiffInputs('', '', workspace), true);
   assert.equal(validateCoverageDiffInputs('true', '100', workspace), true);
   assert.equal(validateCoverageDiffInputs('origin/main..HEAD', '99.5', workspace), true);
+  assert.equal(validateCoverageDiffInputs('a..b', '', workspace, { affectedBy: 'true', skipTests: false }), true);
   assert.deepEqual(failures, []);
   assert.deepEqual(gitCalls, []);
 });
