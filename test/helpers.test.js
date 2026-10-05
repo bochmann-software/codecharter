@@ -229,6 +229,16 @@ test('locationLink: without line number links the file only', () => {
 
 const counts = (error, warn, info) => ({ total: error + warn + info, error, warn, info });
 
+test('footerLine: an inconclusive run fails regardless of fail-on', () => {
+  for (const f of ['never', 'error', 'info']) {
+    assert.match(
+      footerLine(f, counts(0, 0, 0), { isInconclusive: true, reasons: [] }),
+      /fails regardless of `fail-on`/
+    );
+  }
+  assert.match(footerLine('never', counts(0, 0, 0), { isInconclusive: false, reasons: [] }), /does not fail the check/);
+});
+
 test('footerLine: never → reporting-only note regardless of counts', () => {
   assert.match(footerLine('never', counts(5, 5, 5)), /does not fail the check/);
 });
@@ -251,6 +261,37 @@ test('footerLine: info gate counts everything', () => {
 // ---------------------------------------------------------------------------
 // conclusionFor
 // ---------------------------------------------------------------------------
+
+const inconclusive = (...reasons) => ({ isInconclusive: true, reasons });
+const conclusive = { isInconclusive: false, reasons: [] };
+
+test('conclusionFor: an inconclusive run fails under every fail-on value, even with 0 findings', () => {
+  for (const failOn of ['error', 'warn', 'warning', 'info', 'never', '', undefined]) {
+    assert.equal(conclusionFor(failOn, counts(0, 0, 0), inconclusive('config-lock-drift')), 'failure', String(failOn));
+    assert.equal(conclusionFor(failOn, counts(9, 9, 9), inconclusive()), 'failure', String(failOn));
+  }
+});
+
+test('conclusionFor: a conclusive or absent reach leaves the verdict unchanged', () => {
+  for (const reach of [conclusive, null, undefined]) {
+    assert.equal(conclusionFor('never', counts(0, 0, 0), reach), 'neutral');
+    assert.equal(conclusionFor('error', counts(0, 0, 0), reach), 'success');
+    assert.equal(conclusionFor('error', counts(1, 0, 0), reach), 'failure');
+  }
+});
+
+test('titleFor: an inconclusive run is titled with its first reason', () => {
+  assert.equal(
+    titleFor(counts(0, 0, 0), inconclusive('config-lock-drift', 'other')),
+    'Inconclusive: config-lock-drift'
+  );
+  assert.equal(titleFor(counts(0, 0, 0), inconclusive()), 'Inconclusive: no reason was reported');
+});
+
+test('titleFor: a conclusive run keeps the count title', () => {
+  assert.equal(titleFor(counts(0, 0, 0), conclusive), 'No findings');
+  assert.equal(titleFor(counts(1, 2, 3)), '1 error, 2 warning, 3 info');
+});
 
 test('conclusionFor: never is always neutral', () => {
   assert.equal(conclusionFor('never', counts(9, 9, 9)), 'neutral');

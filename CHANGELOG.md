@@ -26,7 +26,29 @@ the latest release in its line.
   .codecharter/rules") alongside the configured/resolved/evaluated totals from
   `run.reach`.
 
+### Fixed
+
+- An inconclusive run (`run.reach.isInconclusive`) no longer publishes a green
+  App check. The `CodeCharter / <solution>` check run now concludes `failure`
+  with the title `Inconclusive: <first reason>` regardless of `fail-on` (it
+  used to read `success` / `No findings`, or `neutral` under `fail-on: never`),
+  so branch protection requiring the App's check cannot merge on an untrusted
+  result. The `badge` payload is skipped for such a run, and its SARIF file is
+  removed and `sarif-path` left unset so it cannot close open Code Scanning
+  alerts; the job summary says so. An inconclusive report also fails the step
+  when the CLI exited 0.
+
 ### Changed
+
+- An inconclusive run now deliberately overrides `fail-on: never`: the App
+  check concludes `failure` and the step fails, even when the CLI exits 0. The
+  PR comment and step summary say the check fails regardless of `fail-on` and
+  no longer show a green `issues: 0` badge. A report carrying
+  `inconclusiveReasons` counts as inconclusive even without the
+  `isInconclusive` flag, and a report without a `violations` array is treated
+  like a missing report (no check is posted, the step fails). The SARIF file
+  at `sarif-output` is deleted before the CLI runs so a stale one can never be
+  uploaded. New `inconclusive` output (`true`/`false`).
 
 - The `rules` input is now additive rather than exclusive when the CLI is
   >= 1.6.4: it runs alongside whatever `.codecharter/config.yml` already

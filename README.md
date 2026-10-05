@@ -54,7 +54,7 @@ jobs:
 | `rules` | no | `''` (auto) | Path to a local rules directory in your repo (e.g. `rules`), passed as `--rules`. With a CLI >= 1.6.4 this **adds** to whatever `.codecharter/config.yml` already resolves (`profiles:` and `rules:`); it no longer replaces it. Leave empty to let the CLI resolve rules from `.codecharter/config.yml` alone |
 | `rules-only` | no | `false` | Passed as `--rules-only`. Restricts the run to `rules` only, ignoring `profiles:`/`rules:` from `.codecharter/config.yml` — the exclusive behavior `rules` had before CLI 1.6.4. Requires `rules` to be set. Requires a CLI >= 1.6.4 (`version: latest`, the default, satisfies it) |
 | `require-rules` | no | `false` | Fail the run instead of only warning when no rule source resolves at all: no `rules` input, no `rules/` directory, and neither `profiles:` nor `rules:` in `.codecharter/config.yml`. This is a pre-flight check, independent of the CLI's own exit code 2 ("inconclusive") for a declared source that failed to resolve at runtime — see [Rules resolution](#rules-resolution) |
-| `fail-on` | no | `error` | Fail the run when violations reach this level (`error`, `warn`, `info`, `never`) |
+| `fail-on` | no | `error` | Fail the run when violations reach this level (`error`, `warn`, `info`, `never`). An inconclusive run fails regardless, including with `never` |
 | `severity-threshold` | no | `info` | Minimum severity to report and annotate |
 | `diff` | no | `false` | Scope the run to changed lines only (see below). `true` takes the lines changed by the pull request or push; also accepts a git ref range (e.g. `main..HEAD`) or, in analyze mode, a path to a unified diff file. In coverage mode it turns on the changed-lines gate |
 | `baseline` | no | `''` | Path to a committed baseline file of accepted findings (see below). When set, only findings not in the baseline are reported and gated, so existing findings are tolerated and only new ones fail |
@@ -404,7 +404,8 @@ sending the numbers in the first place.
 | `findings-error` | Number of error-level findings |
 | `findings-warn` | Number of warning-level findings |
 | `findings-info` | Number of info-level findings |
-| `sarif-path` | Path to the generated SARIF file, if `sarif-output` was set |
+| `sarif-path` | Path to the generated SARIF file, if `sarif-output` was set. Unset when the run is inconclusive (the file is removed) |
+| `inconclusive` | `"true"` when the run was inconclusive (the rule sources could not be established), `"false"` otherwise; empty when no report was produced |
 | `coverage-percent` | Coverage mode: line-coverage percent; empty when no coverage data was produced |
 | `coverage-met` | Coverage mode: `"true"` when whole-solution coverage met the required minimum (only reported under a changed-lines gate) |
 | `coverage-uncovered-regions` | Coverage mode: number of uncovered regions in the report |
@@ -424,6 +425,21 @@ native annotations (findings appear inline on the "Files changed" tab), a
 machine-readable JSON report used to set the outputs above and a sticky PR
 summary comment, and — when `sarif-output` is set — a SARIF file for Code
 Scanning. Disable the comment with `comment: false` to keep annotations only.
+
+An inconclusive run (the CLI could not establish that its rule sources
+resolved) is never reported as a pass: the App check concludes `failure` titled
+`Inconclusive: <reason>` whatever `fail-on` says, no badge is sent, and no SARIF
+file is left behind (`sarif-path` stays unset), so it cannot close open Code
+Scanning alerts. Guard your upload step on the output, because an empty
+`sarif_file` makes `github/codeql-action/upload-sarif` scan the whole working
+directory for SARIF files:
+
+```yaml
+- uses: github/codeql-action/upload-sarif@v3
+  if: steps.codecharter.outputs.sarif-path != ''
+  with:
+    sarif_file: ${{ steps.codecharter.outputs.sarif-path }}
+```
 
 ### Branded checks via the CodeCharter App (recommended)
 

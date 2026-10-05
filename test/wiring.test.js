@@ -44,6 +44,9 @@ let cliArgs;
 let gitCalls;
 let infos;
 let beforeReachable;
+let summaries;
+let sarifLeft;
+let sarifAtExec;
 
 // Answers git like a checkout with history: every merge-base is MERGEBASE and
 // every parent lookup PARENTSHA. Records the calls.
@@ -101,7 +104,8 @@ beforeEach(() => {
     configurable: true,
     writable: true,
     value: {
-      addRaw() {
+      addRaw(text) {
+        summaries?.push(text);
         return this;
       },
       async write() {
@@ -281,7 +285,10 @@ test('coverage mode: falls back to the workflow-token comment when the portal de
 
 // Drives run() in analyze mode against a stubbed download/extract/CLI, and
 // returns the payload posted to the portal.
-async function analyzeRun(inputs = {}, { violations = [{ severity: 'error' }], exitCode = 0, reportExtra = {} } = {}) {
+async function analyzeRun(
+  inputs = {},
+  { violations = [{ severity: 'error' }], exitCode = 0, reportExtra = {}, staleSarif = false } = {}
+) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-ws-'));
   fs.writeFileSync(path.join(workspace, 'App.sln'), '');
   fs.mkdirSync(path.join(workspace, 'rules'));
@@ -289,6 +296,7 @@ async function analyzeRun(inputs = {}, { violations = [{ severity: 'error' }], e
   process.env['INPUT_API-KEY'] = 'KEY';
   process.env.INPUT_CACHE = 'false';
   for (const [key, value] of Object.entries(inputs)) process.env[key] = value;
+  if (staleSarif) fs.writeFileSync(path.join(workspace, process.env['INPUT_SARIF-OUTPUT']), 'stale');
 
   cache.isFeatureAvailable = () => false;
   // The download writes the response stream to disk, so it must be a real
@@ -310,11 +318,19 @@ async function analyzeRun(inputs = {}, { violations = [{ severity: 'error' }], e
     cliArgs = args;
     const jsonArg = args.find((a) => typeof a === 'string' && a.startsWith('json:'));
     fs.writeFileSync(jsonArg.slice('json:'.length), JSON.stringify({ violations, ...reportExtra }));
+    const sarifArg = args.find((a) => typeof a === 'string' && a.startsWith('sarif:'));
+    sarifAtExec = sarifArg ? fs.existsSync(sarifArg.slice('sarif:'.length)) : null;
+    if (sarifArg) fs.writeFileSync(sarifArg.slice('sarif:'.length), '{}');
     return exitCode;
   };
 
+  summaries = [];
+  sarifLeft = null;
+  sarifAtExec = null;
   try {
     await run();
+    const sarifInput = process.env['INPUT_SARIF-OUTPUT'];
+    if (sarifInput) sarifLeft = fs.existsSync(path.join(workspace, sarifInput));
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -437,6 +453,108 @@ test('analyze mode: an inconclusive run fails distinctly from the fail-on gate, 
   // than reading as a quiet "just some info findings, gate satisfied".
   assert.match(payload.summary, /\*\*Inconclusive run\*\* — config-lock-drift\./);
   assert.match(payload.summary, /- codeguard\/csharp-all: config\.yml requests 9\.9\.9, the lock has 1\.2\.0/);
+});
+
+const inconclusiveReport = (reasons = ['config-lock-drift']) => ({
+  run: { reach: { isInconclusive: true, inconclusiveReasons: reasons } },
+});
+
+test('analyze mode: an inconclusive run with 0 findings posts a failing check, under every fail-on', async () => {
+  for (const failOn of ['error', 'warn', 'info', 'never']) {
+    posts = [];
+    const payload = await analyzeRun(
+      { 'INPUT_FAIL-ON': failOn },
+      { violations: [], exitCode: 2, reportExtra: inconclusiveReport() }
+    );
+    assert.equal(payload.conclusion, 'failure', failOn);
+    assert.equal(payload.title, 'Inconclusive: config-lock-drift', failOn);
+  }
+});
+
+test('analyze mode: an inconclusive report fails the step even when the CLI exited 0', async () => {
+  const payload = await analyzeRun({}, { violations: [], exitCode: 0, reportExtra: inconclusiveReport() });
+  assert.equal(payload.conclusion, 'failure');
+  assert.match(failures[0], /inconclusive \(exit code 0\)/);
+});
+
+test('analyze mode: an inconclusive run sends no badge even when badge: true', async () => {
+  const payload = await analyzeRun(
+    { INPUT_BADGE: 'true' },
+    { violations: [], exitCode: 2, reportExtra: inconclusiveReport() }
+  );
+  assert.equal('badge' in payload, false);
+});
+
+test('analyze mode: an inconclusive run drops the SARIF file, leaves sarif-path unset and says so', async () => {
+  await analyzeRun(
+    { 'INPUT_SARIF-OUTPUT': 'results.sarif' },
+    { violations: [], exitCode: 2, reportExtra: inconclusiveReport() }
+  );
+  assert.equal(sarifLeft, false);
+  assert.equal('sarif-path' in outputs, false);
+  assert.match(summaries.join('\n'), /SARIF file was not produced: this run was inconclusive/);
+});
+
+test('analyze mode: a conclusive run keeps the SARIF file, sarif-path and the badge', async () => {
+  const payload = await analyzeRun(
+    { 'INPUT_SARIF-OUTPUT': 'results.sarif', INPUT_BADGE: 'true' },
+    { violations: [], exitCode: 0, reportExtra: { run: { reach: { isInconclusive: false } } } }
+  );
+  assert.equal(sarifLeft, true);
+  assert.ok(outputs['sarif-path'].endsWith('results.sarif'));
+  assert.doesNotMatch(summaries.join('\n'), /SARIF file was not produced/);
+  assert.equal(payload.conclusion, 'success');
+  assert.equal(payload.title, 'No findings');
+  assert.ok(payload.badge);
+});
+
+test('analyze mode: the check, comment and summary of an inconclusive run say it fails regardless of fail-on', async () => {
+  const payload = await analyzeRun(
+    { 'INPUT_FAIL-ON': 'never' },
+    { violations: [], exitCode: 0, reportExtra: inconclusiveReport() }
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(failures.length, 1);
+  assert.match(payload.summary, /Inconclusive run.* the check fails regardless of `fail-on`/);
+  assert.doesNotMatch(payload.summary, /brightgreen/);
+  assert.doesNotMatch(payload.summary, /does not fail the check/);
+  assert.equal(outputs.inconclusive, 'true');
+});
+
+test('analyze mode: reasons without the isInconclusive flag still make the run inconclusive', async () => {
+  const payload = await analyzeRun(
+    {},
+    { violations: [], exitCode: 2, reportExtra: { run: { reach: { inconclusiveReasons: ['no-rule-source'] } } } }
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Inconclusive: no-rule-source');
+});
+
+test('analyze mode: an inconclusive run falls back to the workflow-token comment when the portal declines', async () => {
+  postStatus = 404;
+  await analyzeRun({ 'INPUT_GITHUB-TOKEN': '' }, { violations: [], exitCode: 2, reportExtra: inconclusiveReport() });
+  assert.ok(warnings.some((m) => /No github-token available/.test(m)));
+  assert.match(failures[0], /inconclusive \(exit code 2\)/);
+  assert.match(summaries.join('\n'), /the check fails regardless of `fail-on`/);
+});
+
+test('analyze mode: a report without a violations array is treated as no report', async () => {
+  const payload = await analyzeRun({}, { violations: null, exitCode: 0 });
+  assert.equal(payload, undefined, 'no check is posted');
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /without producing results|failed \(exit code 0\)/);
+  assert.equal('findings-total' in outputs, false);
+});
+
+test('analyze mode: a stale SARIF file is removed before the CLI runs', async () => {
+  await analyzeRun({ 'INPUT_SARIF-OUTPUT': 'results.sarif' }, { violations: [], exitCode: 0, staleSarif: true });
+  assert.equal(sarifAtExec, false);
+  assert.equal(sarifLeft, true, 'the fresh run still writes its own file');
+});
+
+test('analyze mode: a conclusive run reports inconclusive false', async () => {
+  await analyzeRun({}, { violations: [], exitCode: 0 });
+  assert.equal(outputs.inconclusive, 'false');
 });
 
 test('analyze mode: a conclusive run surfaces rule-source reach in the comment', async () => {
