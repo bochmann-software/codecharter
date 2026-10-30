@@ -18,6 +18,7 @@ import {
   buildComment,
   tally,
   inconclusiveReasonsFromLog,
+  formatUnresolvedSources,
 } from '../src/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -198,4 +199,47 @@ test('inconclusiveReasonsFromLog_WhenTheLogNamesNoInconclusiveRun_ReturnsNull', 
 
 test('inconclusiveReasonsFromLog_WhenTheHeadlineHasNoReasonLines_ReturnsAnEmptyList', () => {
   assert.deepEqual(inconclusiveReasonsFromLog('Inconclusive run: 0 rules evaluated, 0 resolved.\n'), []);
+});
+
+// A real CLI 1.7.0 inconclusive report: config.yml declares one rules
+// directory that resolves and one that does not exist (exit code 2).
+const unresolved170 = () => fixture('analyze-1.7.0-source-unresolved.json');
+const MISSING = ".codecharter/missing-rules (directory '.codecharter/missing-rules' does not exist)";
+
+test('reachFromReport_WhenGivenARealCli170SourceUnresolvedReport_IsInconclusive', () => {
+  const reach = reachFromReport(unresolved170());
+  assert.equal(reach.isInconclusive, true);
+  assert.deepEqual(reach.reasons, ['source-unresolved']);
+  assert.deepEqual(reach.unresolvedSources, ['.codecharter/missing-rules']);
+});
+
+test('formatRuleSources_WhenAnUnresolvedSourceGivesAReason_AppendsIt', () => {
+  assert.equal(
+    formatRuleSources(reachFromReport(unresolved170()).ruleSources),
+    "1 from .codecharter/rules, .codecharter/missing-rules (unresolved: directory '.codecharter/missing-rules' does not exist)"
+  );
+});
+
+test('formatUnresolvedSources_WhenTheRuleSourceGivesAReason_NamesIt', () => {
+  assert.deepEqual(formatUnresolvedSources(reachFromReport(unresolved170())), [MISSING]);
+});
+
+test('formatUnresolvedSources_WhenNoRuleSourceMatches_ShowsTheNameOnly', () => {
+  const reach = {
+    unresolvedSources: ['acme/rules@1.0.0'],
+    ruleSources: [{ identity: 'other', unresolvedReason: 'x' }],
+  };
+  assert.deepEqual(formatUnresolvedSources(reach), ['acme/rules@1.0.0']);
+});
+
+test('buildComment_WhenARealCli170SourceDidNotResolve_NamesTheReason', () => {
+  const report = unresolved170();
+  const md = buildComment(report, tally(report), '/home/runner/work/sample/sample', {
+    severityThreshold: 'info',
+    repoFull: 'acme/app',
+    sha: 'abc',
+    failOn: 'error',
+  });
+  assert.ok(md.includes('**Inconclusive run** — source-unresolved.'));
+  assert.ok(md.includes(`- Unresolved: ${MISSING}`));
 });

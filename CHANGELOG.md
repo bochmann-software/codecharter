@@ -38,6 +38,9 @@ the latest release in its line.
   module(s) not instrumented`) and a "Modules not measured" table in the
   comment now name each module and coverlet's reason, and the footer says
   `fail-on-threshold` does not soften it.
+- A rule source that did not resolve now says why (CLI 1.7.0's
+  `unresolvedReason`, e.g. the declared directory does not exist) in the PR
+  comment, the step's inconclusive message and the reach line.
 
 ## [1.11.0] - 2026-10-05
 

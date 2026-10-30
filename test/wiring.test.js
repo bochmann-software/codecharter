@@ -626,6 +626,19 @@ test('analyze mode: a real CLI 1.7.0 report passes as a conclusive run with its 
   assert.match(payload.summary, /_Reach: 126 rule\(s\) evaluated — 126 from rules\._/);
 });
 
+test('analyze mode: a real CLI 1.7.0 run with an unresolved source fails naming why it did not resolve', async () => {
+  const payload = await analyzeRun({}, { report: realReport('analyze-1.7.0-source-unresolved.json'), exitCode: 2 });
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Inconclusive: source-unresolved');
+  assert.equal(outputs.inconclusive, 'true');
+  assert.ok(
+    failures[0].includes(
+      "inconclusive (exit code 2): source-unresolved — unresolved: .codecharter/missing-rules (directory '.codecharter/missing-rules' does not exist)."
+    ),
+    failures[0]
+  );
+});
+
 test('analyze mode: a CLI 1.7.0 run without a rule source fails as inconclusive, not as a crash', async () => {
   const stderr = fs.readFileSync(path.join(FIXTURES, 'analyze-1.7.0-no-rule-source.stderr.txt'), 'utf8');
   const payload = await analyzeRun({}, { report: null, exitCode: 2, stderr });

@@ -701,11 +701,36 @@ function formatRuleSources(ruleSources) {
   return ruleSources
     .map((s) => {
       const identity = s.identity || s.declaredIdentity || 'unknown source';
-      if (s.isResolved === false) return `${identity} (unresolved)`;
+      if (s.isResolved === false) {
+        const reason = unresolvedReason(s);
+        return `${identity} (unresolved${reason ? `: ${reason}` : ''})`;
+      }
       const count = typeof s.resolvedCount === 'number' ? s.resolvedCount : 0;
       return `${count} from ${identity}`;
     })
     .join(', ');
+}
+
+/**
+ * Why a rule source did not resolve (`unresolvedReason`, CLI >= 1.7.0), without
+ * its closing period, or '' when the report does not say.
+ */
+function unresolvedReason(source) {
+  const reason = source && typeof source.unresolvedReason === 'string' ? source.unresolvedReason.trim() : '';
+  return reason.replace(/\.$/, '');
+}
+
+/**
+ * Each `run.reach.unresolvedSources` entry, followed by the reason its
+ * `run.ruleSources` entry gives when it gives one, e.g.
+ * ".codecharter/missing-rules (directory '.codecharter/missing-rules' does not exist)".
+ */
+function formatUnresolvedSources(reach) {
+  return reach.unresolvedSources.map((name) => {
+    const source = reach.ruleSources.find((s) => s && (s.identity === name || s.declaredIdentity === name));
+    const reason = unresolvedReason(source);
+    return reason ? `${name} (${reason})` : name;
+  });
 }
 
 /**
@@ -879,7 +904,7 @@ function buildComment(report, counts, workspace, opts) {
       const reasons = reach.reasons.length ? reach.reasons.join(', ') : 'no reason was reported';
       lines.push(`**Inconclusive run** — ${reasons}.`, '');
       for (const line of formatDrift(reach.drift)) lines.push(`- ${line}`);
-      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${reach.unresolvedSources.join(', ')}`);
+      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${formatUnresolvedSources(reach).join(', ')}`);
       if (reach.coreLibraryUnresolvedProjects.length)
         lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(', ')}`);
       lines.push('');
@@ -2318,7 +2343,10 @@ async function run() {
         );
       } else if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(', ') : 'no reason was reported';
-        const driftDetail = formatDrift(reach.drift).join('; ');
+        const driftDetail = [
+          ...formatDrift(reach.drift),
+          ...formatUnresolvedSources(reach).map((u) => `unresolved: ${u}`),
+        ].join('; ');
         core.setFailed(
           `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}` +
             `${driftDetail ? ` — ${driftDetail}` : ''}. This is independent of \`fail-on\` — the CLI could ` +
@@ -2435,6 +2463,7 @@ export {
   inconclusiveReasonsFromLog,
   formatRuleSources,
   formatDrift,
+  formatUnresolvedSources,
   resolveDiffArgs,
   fetchManifest,
   obtainCli,

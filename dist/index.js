@@ -70551,10 +70551,24 @@ function formatRuleSources(ruleSources) {
   if (!ruleSources || ruleSources.length === 0) return "";
   return ruleSources.map((s) => {
     const identity = s.identity || s.declaredIdentity || "unknown source";
-    if (s.isResolved === false) return `${identity} (unresolved)`;
+    if (s.isResolved === false) {
+      const reason = unresolvedReason(s);
+      return `${identity} (unresolved${reason ? `: ${reason}` : ""})`;
+    }
     const count = typeof s.resolvedCount === "number" ? s.resolvedCount : 0;
     return `${count} from ${identity}`;
   }).join(", ");
+}
+function unresolvedReason(source) {
+  const reason = source && typeof source.unresolvedReason === "string" ? source.unresolvedReason.trim() : "";
+  return reason.replace(/\.$/, "");
+}
+function formatUnresolvedSources(reach) {
+  return reach.unresolvedSources.map((name) => {
+    const source = reach.ruleSources.find((s) => s && (s.identity === name || s.declaredIdentity === name));
+    const reason = unresolvedReason(source);
+    return reason ? `${name} (${reason})` : name;
+  });
 }
 function formatDrift(drift) {
   if (!drift || drift.length === 0) return [];
@@ -70668,7 +70682,7 @@ function buildComment(report, counts, workspace, opts) {
       const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
       lines.push(`**Inconclusive run** \u2014 ${reasons}.`, "");
       for (const line of formatDrift(reach.drift)) lines.push(`- ${line}`);
-      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${reach.unresolvedSources.join(", ")}`);
+      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${formatUnresolvedSources(reach).join(", ")}`);
       if (reach.coreLibraryUnresolvedProjects.length)
         lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(", ")}`);
       lines.push("");
@@ -71639,7 +71653,10 @@ See the action README, section "Inputs".`
         );
       } else if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
-        const driftDetail = formatDrift(reach.drift).join("; ");
+        const driftDetail = [
+          ...formatDrift(reach.drift),
+          ...formatUnresolvedSources(reach).map((u) => `unresolved: ${u}`)
+        ].join("; ");
         core.setFailed(
           `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}${driftDetail ? ` \u2014 ${driftDetail}` : ""}. This is independent of \`fail-on\` \u2014 the CLI could not establish that its rule sources actually resolved. What to do: check the CodeCharter log above for the specific cause (e.g. a stale \`codecharter.lock.json\` needing \`codecharter update\`, a config pin drift, or no resolvable rule source at all). See the action README, section "Rules resolution".`
         );
@@ -71704,6 +71721,7 @@ export {
   footerLine,
   formatDrift,
   formatRuleSources,
+  formatUnresolvedSources,
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
   inconclusiveReasonsFromLog,
