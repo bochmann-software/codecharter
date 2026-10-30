@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
-import { core, exec, io, tc, cache, github, HttpClient } from './deps.js';
+import { core, exec, io, tc, cache, github, clock, HttpClient } from './deps.js';
 
 const MAX_COMMENT_ROWS = 100;
 
@@ -31,10 +31,25 @@ const EM_DASH = '—';
  * containing a backslash cannot break the cell (or double-escape).
  */
 function escapeCell(value) {
+  return escapeInline(value);
+}
+
+/**
+ * Makes report- or log-derived text render literally inside one line of a
+ * comment or check summary. Line breaks collapse to spaces (no forged rows,
+ * headings or verdicts). Every character with an inline Markdown or HTML
+ * meaning is backslash-escaped, so a .NET exception message with backticks
+ * (List`1) does not open a code span, `<T>` is not swallowed as an HTML tag
+ * and identifiers keep their underscores. An `@name` mention gets a zero-width
+ * space after the `@`, so text from a fork's project names or rule files can
+ * never ping anyone under the action's identity. Pipes are escaped too, so the
+ * result is safe in a table cell.
+ */
+function escapeInline(value) {
   return String(value ?? '')
     .replace(/[\r\n]+/g, ' ')
-    .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|');
+    .replace(/[\\`*_[\]<>#|~&]/g, '\\$&')
+    .replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9])/g, '$1@​');
 }
 
 /**
@@ -152,8 +167,24 @@ function findExecutable(root, isWindows) {
  */
 const CLI_COMPLETE_MARKER = '.codecharter-complete';
 
-/** How often a lost publish is retried before running from the staging copy. */
-const PUBLISH_ATTEMPTS = 3;
+/**
+ * Waits between publish attempts, in milliseconds: one more attempt than
+ * entries is made before the run falls back to its own staging copy.
+ */
+const PUBLISH_BACKOFF_MS = [250, 1000, 2000];
+
+/** Rename errors of a lock that is likely to clear by itself. */
+const TRANSIENT_RENAME_ERRORS = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/** Restarts a folder's age (its mtime) at now; best-effort. */
+function touchFolder(dir) {
+  try {
+    const now = new Date();
+    fs.utimesSync(dir, now, now);
+  } catch (err) {
+    core.debug(`Could not touch ${dir}: ${err instanceof Error ? err.message : err}`);
+  }
+}
 
 /** Returns the executable of a complete (marker-carrying) CLI copy, or null. */
 function completeExecutable(dir, isWindows) {
@@ -245,9 +276,9 @@ async function publishCli(stagingDir, cliDir, isWindows) {
 }
 
 async function publishOrKeep(stagingDir, cliDir, isWindows) {
-  let failure = null;
+  let failure;
   let blocked = false;
-  for (let attempt = 0; attempt < PUBLISH_ATTEMPTS; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     failure = tryRename(stagingDir, cliDir);
     if (!failure) return findExecutable(cliDir, isWindows);
 
@@ -257,23 +288,28 @@ async function publishOrKeep(stagingDir, cliDir, isWindows) {
       await io.rmRF(stagingDir);
       return winner;
     }
-    // The rename failed with nothing at the target: retry it as it is.
-    if (!fs.existsSync(cliDir)) continue;
 
-    const aside = siblingPath(cliDir, 'stale');
-    const asideFailure = tryRename(cliDir, aside);
-    if (asideFailure) {
-      // Gone in the meantime (another job cleared it): just try again.
-      if (!fs.existsSync(cliDir)) continue;
-      failure = asideFailure;
-      blocked = true;
-      break;
+    const inTheWay = fs.existsSync(cliDir);
+    if (inTheWay) {
+      const aside = siblingPath(cliDir, 'stale');
+      const asideFailure = tryRename(cliDir, aside);
+      if (asideFailure && fs.existsSync(cliDir)) {
+        failure = asideFailure;
+        blocked = true;
+        break;
+      }
+      // Never deleted here: on Linux and macOS the rename succeeds even while a
+      // job (an older action version, which installs in place) still runs from
+      // the copy, and deleting it would pull the CLI out from under that job.
+      // Its age restarts now, so removeLeftoverCopies takes it after a day.
+      if (!asideFailure) touchFolder(aside);
     }
-    try {
-      await io.rmRF(aside);
-    } catch (err) {
-      core.debug(`Could not remove the stale CLI copy ${aside}: ${err instanceof Error ? err.message : err}`);
-    }
+
+    if (attempt >= PUBLISH_BACKOFF_MS.length) break;
+    // A lock on a fresh copy (a virus scanner or indexer opening the new DLLs)
+    // clears within moments: wait before retrying, instead of failing three
+    // times in a row on the same lock.
+    if (!inTheWay && TRANSIENT_RENAME_ERRORS.has(failure)) await clock.sleep(PUBLISH_BACKOFF_MS[attempt]);
   }
 
   const cause = blocked
@@ -946,11 +982,14 @@ function formatDrift(drift) {
  * with no rule source at all exits 2 before it renders any output, so its
  * report is missing; the CLI still prints the headline `Inconclusive run: ...`
  * followed by one `  [<code>] <description>` line per reason on stderr.
- * Annotation lines start with `::` and never match.
+ * Annotation lines start with `::` and never match, nor does a `[word]` line
+ * that is not indented.
  */
 function inconclusiveReasonsFromLog(output) {
   if (!/^Inconclusive run:/m.test(output || '')) return null;
-  const codes = [...output.matchAll(/^\s+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
+  // Spaces or tabs only: `\s` would also take the line break of a CRLF log or
+  // a blank line, and count a non-indented `[word]` line as a reason.
+  const codes = [...output.matchAll(/^[ \t]+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
   return [...new Set(codes)];
 }
 
@@ -1038,7 +1077,7 @@ function severityBadge(severity) {
 function locationLink(violation, workspace, repoFull, sha) {
   const rel = displayPath(violation.filePath, workspace);
   if (!rel) return '-';
-  const name = rel.split('/').pop();
+  const name = escapeInline(rel.split('/').pop());
   if (violation.lineNumber) {
     return `[${name}:${violation.lineNumber}](https://github.com/${repoFull}/blob/${sha}/${rel}#L${violation.lineNumber})`;
   }
@@ -1106,16 +1145,20 @@ function buildComment(report, counts, workspace, opts) {
   const reach = reachFromReport(report);
   if (reach) {
     if (reach.isInconclusive) {
-      const reasons = reach.reasons.length ? reach.reasons.join(', ') : 'no reason was reported';
+      // Everything below comes from the report, so it is escaped for the comment.
+      const reasons = reach.reasons.length ? reach.reasons.map(escapeInline).join(', ') : 'no reason was reported';
       lines.push(`**Inconclusive run** — ${reasons}.`, '');
-      for (const line of formatDrift(reach.drift)) lines.push(`- ${line}`);
-      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${formatUnresolvedSources(reach).join(', ')}`);
+      for (const line of formatDrift(reach.drift)) lines.push(`- ${escapeInline(line)}`);
+      if (reach.unresolvedSources.length)
+        lines.push(`- Unresolved: ${formatUnresolvedSources(reach).map(escapeInline).join(', ')}`);
       if (reach.coreLibraryUnresolvedProjects.length)
-        lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(', ')}`);
-      for (const line of reach.detail) lines.push(`- ${line}`);
+        lines.push(
+          `- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.map(escapeInline).join(', ')}`
+        );
+      for (const line of reach.detail) lines.push(`- ${escapeInline(line)}`);
       lines.push('');
     } else {
-      const sources = formatRuleSources(reach.ruleSources);
+      const sources = escapeInline(formatRuleSources(reach.ruleSources));
       const parts = [];
       if (reach.evaluated !== undefined) parts.push(`${reach.evaluated} rule(s) evaluated`);
       if (reach.resolved !== undefined && reach.resolved !== reach.evaluated) parts.push(`${reach.resolved} resolved`);
@@ -1598,7 +1641,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
     if (truncated) break;
     lines.push(
       '<details>',
-      `<summary>${file} (${regions.length} ${label})</summary>`,
+      `<summary>${escapeInline(file)} (${regions.length} ${label})</summary>`,
       '',
       '| Lines | Method | Location |',
       '|-------|--------|----------|'
@@ -1615,8 +1658,8 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
       const method = escapeCell(region.method);
       const link =
         repoFull && sha && first
-          ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})`
-          : `${file}:${first ?? '?'}`;
+          ? `[${escapeInline(file)}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})`
+          : `${escapeInline(file)}:${first ?? '?'}`;
       lines.push(`| ${span} | ${method} | ${link} |`);
       rendered++;
     }
@@ -1880,6 +1923,8 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
     const installed = completeExecutable(cliDir, isWindows);
     if (installed) {
       core.info(`Using the CodeCharter CLI from the tool cache (${platform}, ${keyVersion}).`);
+      // Runs that only reuse a copy still clear what killed jobs left behind.
+      await removeLeftoverCopies(cliDir, null);
       return installed;
     }
   }
@@ -1911,13 +1956,11 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
 
   // The copy this run assembles: a fresh staging sibling of the versioned
   // tool-cache directory (published atomically below), or with `cache: false`
-  // a directory of this run's own that nothing else ever sees.
-  let installDir = path.join(tmp, 'cli');
-  if (cacheEnabled) {
-    await io.mkdirP(path.dirname(cliDir));
-    installDir = siblingPath(cliDir, 'staging');
-  }
-  await io.mkdirP(installDir);
+  // a directory of this run's own that nothing else ever sees. It is created
+  // only once the CLI is at hand (restored, or downloaded and verified), and
+  // removed again if assembling it fails, so a failed run leaves nothing in
+  // the shared tool cache.
+  const installDir = cacheEnabled ? siblingPath(cliDir, 'staging') : path.join(tmp, 'cli');
 
   // The Actions cache restores into, and saves from, the path it was given, so
   // that path must stay stable across runs yet belong to this runner alone.
@@ -1936,44 +1979,54 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
     }
   }
 
+  let archive = null;
   if (!fromCache) {
     core.info(`Downloading CodeCharter CLI (${platform}, ${downloadVersion}) from ${portal}`);
     const url = `${portal}/api/v1/cli/${platform}/${downloadVersion}`;
-    const { archive, expectedSha } = await downloadArchive(url, apiKey, tmp, isWindows);
+    const downloaded = await downloadArchive(url, apiKey, tmp, isWindows);
     // Prefer the manifest's SHA-256 when we resolved one: it pins the cached
     // artifact to the exact version the cache key names. Otherwise trust the
     // download's own X-CodeCharter-Sha256 header.
-    await verifySha(archive, manifestSha || expectedSha);
-    const extractDir = canCache ? transitDir : installDir;
-    if (canCache) {
-      // Drop whatever a failed restore may have left behind.
-      await io.rmRF(transitDir);
-      await io.mkdirP(transitDir);
-    }
-    if (isWindows) {
-      await tc.extractZip(archive, extractDir);
-    } else {
-      await tc.extractTar(archive, extractDir);
-    }
-    if (!findExecutable(extractDir, isWindows)) {
-      await io.rmRF(installDir);
-      throw new Error('Extracted archive does not contain a codecharter executable.');
-    }
+    await verifySha(downloaded.archive, manifestSha || downloaded.expectedSha);
+    archive = downloaded.archive;
   }
-  if (canCache) fs.cpSync(transitDir, installDir, { recursive: true });
 
-  const staged = findExecutable(installDir, isWindows);
-  if (!isWindows) fs.chmodSync(staged, 0o755);
+  let staged;
+  try {
+    await io.mkdirP(installDir);
+    if (archive) {
+      const extractDir = canCache ? transitDir : installDir;
+      if (canCache) {
+        // Drop whatever a failed restore may have left behind.
+        await io.rmRF(transitDir);
+        await io.mkdirP(transitDir);
+      }
+      if (isWindows) {
+        await tc.extractZip(archive, extractDir);
+      } else {
+        await tc.extractTar(archive, extractDir);
+      }
+      if (!findExecutable(extractDir, isWindows)) {
+        throw new Error('Extracted archive does not contain a codecharter executable.');
+      }
+    }
+    if (canCache) fs.cpSync(transitDir, installDir, { recursive: true });
 
-  let exe = staged;
-  if (cacheEnabled) {
-    // Written last: only a copy carrying the marker is ever reused.
-    fs.writeFileSync(
-      path.join(installDir, CLI_COMPLETE_MARKER),
-      JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: new Date().toISOString() })
-    );
-    exe = await publishCli(installDir, cliDir, isWindows);
+    staged = findExecutable(installDir, isWindows);
+    if (!isWindows) fs.chmodSync(staged, 0o755);
+    if (cacheEnabled) {
+      // Written last: only a copy carrying the marker is ever reused.
+      fs.writeFileSync(
+        path.join(installDir, CLI_COMPLETE_MARKER),
+        JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: new Date().toISOString() })
+      );
+    }
+  } catch (err) {
+    await io.rmRF(installDir);
+    throw err;
   }
+
+  const exe = cacheEnabled ? await publishCli(installDir, cliDir, isWindows) : staged;
 
   if (canCache && !fromCache) {
     try {
@@ -2645,6 +2698,7 @@ if (isMainModule(import.meta.url, process.argv[1])) {
 // them lets the tests exercise every branch and edge case without spinning up
 // the whole action.
 export {
+  escapeInline,
   run,
   runCoverage,
   coverageSummary,

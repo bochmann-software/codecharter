@@ -243,3 +243,11 @@ test('buildComment_WhenARealCli170SourceDidNotResolve_NamesTheReason', () => {
   assert.ok(md.includes('**Inconclusive run** — source-unresolved.'));
   assert.ok(md.includes(`- Unresolved: ${MISSING}`));
 });
+
+test('inconclusiveReasonsFromLog_WhenACrlfLogHasAnUnindentedBracketLine_IgnoresIt', () => {
+  // The Windows CLI writes CRLF; a blank line followed by `[warn] ...` must not
+  // read as a reason code.
+  const log = fs.readFileSync(path.join(here, 'fixtures', 'analyze-no-rule-source-blank-line.crlf.txt'), 'utf8');
+  assert.ok(log.includes('\r\n\r\n[warn]'), 'the fixture keeps its CRLF line ends');
+  assert.deepEqual(inconclusiveReasonsFromLog(log), ['no-rule-source']);
+});

@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 
-import { cache, io, core, tc, HttpClient } from '../src/deps.js';
+import { cache, io, core, tc, clock, HttpClient } from '../src/deps.js';
 import * as action from '../src/index.js';
 
 const { obtainCli } = action;
@@ -33,6 +33,7 @@ let saved;
 let inUse; // absolute paths of files a running job holds open
 let downloads;
 let warnings;
+let sleeps; // backoff waits the publish asked for, in ms
 
 function eperm(op, file) {
   const err = new Error(`EPERM: operation not permitted, ${op} '${file}'`);
@@ -116,12 +117,17 @@ beforeEach(() => {
     debug: core.debug,
     get: HttpClient.prototype.get,
     renameSync: fs.renameSync,
+    sleep: clock.sleep,
   };
   process.env.RUNNER_TOOL_CACHE = toolCache;
   process.env.RUNNER_TEMP = runnerTemp;
   core.info = () => {};
   core.debug = () => {};
   core.warning = (msg) => warnings.push(msg);
+  sleeps = [];
+  clock.sleep = async (ms) => {
+    sleeps.push(ms);
+  };
   cache.isFeatureAvailable = () => false;
   HttpClient.prototype.get = async () => {
     downloads++;
@@ -164,6 +170,7 @@ afterEach(() => {
   core.debug = saved.debug;
   HttpClient.prototype.get = saved.get;
   fs.renameSync = saved.renameSync;
+  clock.sleep = saved.sleep;
   for (const dir of [toolCache, runnerTemp, ...tmps]) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -238,7 +245,9 @@ test('obtainCli_WhenAHalfExtractedFolderIsLeft_ReplacesItWithACompleteCopy', asy
   assert.equal(downloads, 1, 'a folder without the marker is never used');
   assert.ok(fs.existsSync(path.join(cliDir(), CLI_COMPLETE_MARKER)));
   assert.equal(fs.readFileSync(path.join(cliDir(), 'codecharter.dll'), 'utf8'), 'extracted-1');
-  assert.deepEqual(stagingLeftovers(), [], 'the half-extracted folder is moved aside and removed');
+  const left = stagingLeftovers();
+  assert.equal(left.length, 1, 'the half-extracted folder is moved aside, not deleted');
+  assert.match(left[0], /^1\.6\.7\.stale-\d+-[0-9a-f]+$/);
 });
 
 test('obtainCli_WhenAnUnmarkedFolderIsInUseAndCannotMove_RunsFromItsOwnStagingCopy', async () => {
@@ -260,18 +269,25 @@ test('obtainCli_WhenAnUnmarkedFolderIsInUseAndCannotMove_RunsFromItsOwnStagingCo
   assert.match(warnings[0], /without a completion marker .* cannot be moved aside \(EPERM\)/);
 });
 
-test('obtainCli_WhenAMovedAsideFolderCannotBeRemoved_StillPublishes', async () => {
-  writeCliFiles(cliDir(), 'half');
-  const realRmRF = io.rmRF;
-  io.rmRF = async (target) => {
-    if (path.basename(target).includes('.stale-')) throw eperm('unlink', target);
-    return realRmRF(target);
-  };
+test('obtainCli_WhenAnUnmarkedFolderIsInUseOnPosix_MovesItAsideAndKeepsItForADay', async () => {
+  // Linux and macOS rename a folder even while a job (an older action version,
+  // which installs in place without a marker) still runs from it.
+  writeCliFiles(cliDir(), 'old-action');
+  lockCopy(cliDir());
+  const startedAt = Date.now();
 
   const exe = await install();
 
   assert.equal(exe, path.join(cliDir(), 'codecharter'));
-  assert.ok(fs.existsSync(path.join(cliDir(), CLI_COMPLETE_MARKER)));
+  const [aside] = stagingLeftovers();
+  assert.match(aside, /^1\.6\.7\.stale-/);
+  const asideDir = path.join(path.dirname(cliDir()), aside);
+  assert.equal(
+    fs.readFileSync(path.join(asideDir, 'codecharter.dll'), 'utf8'),
+    'old-action',
+    'the running copy survives'
+  );
+  assert.ok(fs.statSync(asideDir).mtimeMs >= startedAt - 1000, 'its age restarts when it is moved aside');
 });
 
 test('obtainCli_WhenTheFolderVanishesBeforeItIsMovedAside_RetriesThePublish', async () => {
@@ -403,6 +419,7 @@ test('obtainCli_WhenTheRenameKeepsFailingWithNothingInTheWay_WarnsWithTheErrorCo
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /could not be moved into the tool cache at .* \(EBUSY\)/);
   assert.doesNotMatch(warnings[0], /completion marker/);
+  assert.deepEqual(sleeps, [250, 1000, 2000], 'a lock gets time to clear between attempts');
 });
 
 // A process id no machine hands out, so its staging copy counts as abandoned.
@@ -466,4 +483,95 @@ test('obtainCli_WhenTheRunFallsBackToItsStagingCopy_NeverRemovesIt', async () =>
 
 test('removeLeftoverCopies_WhenTheVersionsFolderIsMissing_DoesNothing', async () => {
   await action.removeLeftoverCopies(path.join(toolCache, 'absent', VERSION), null);
+});
+
+test('obtainCli_WhenALockClearsAfterTheFirstWait_PublishesOnTheSecondAttempt', async () => {
+  let attempts = 0;
+  fs.renameSync = (from, to) => {
+    if (++attempts === 1) {
+      const err = new Error('EPERM: operation not permitted');
+      err.code = 'EPERM';
+      throw err;
+    }
+    return saved.renameSync(from, to);
+  };
+
+  const exe = await install();
+
+  assert.equal(exe, path.join(cliDir(), 'codecharter'));
+  assert.deepEqual(sleeps, [250]);
+  assert.deepEqual(warnings, []);
+});
+
+test('obtainCli_WhenTheRenameFailsForAPermanentReason_RetriesWithoutWaiting', async () => {
+  let attempts = 0;
+  fs.renameSync = () => {
+    attempts++;
+    const err = new Error('ENOSPC: no space left on device');
+    err.code = 'ENOSPC';
+    throw err;
+  };
+
+  await install();
+
+  assert.equal(attempts, 4);
+  assert.deepEqual(sleeps, []);
+  assert.match(warnings[0], /\(ENOSPC\)/);
+});
+
+test('obtainCli_WhenTheDownloadIsRejected_LeavesNoStagingCopy', async () => {
+  HttpClient.prototype.get = async () => ({
+    message: Object.assign(Readable.from([]), { statusCode: 401, headers: {} }),
+    readBody: async () => '',
+  });
+
+  await assert.rejects(install(), /API key was rejected/);
+
+  const versions = path.dirname(cliDir());
+  assert.equal(fs.existsSync(versions) ? fs.readdirSync(versions).length : 0, 0, 'nothing lands in the tool cache');
+});
+
+test('obtainCli_WhenExtractionFails_RemovesTheStagingCopy', async () => {
+  tc.extractTar = async (_archive, dest) => {
+    fs.writeFileSync(path.join(dest, 'codecharter.dll'), 'half');
+    const err = new Error('ENOSPC: no space left on device, write');
+    err.code = 'ENOSPC';
+    throw err;
+  };
+
+  await assert.rejects(install(), /ENOSPC/);
+
+  assert.deepEqual(stagingLeftovers(), []);
+  assert.equal(fs.existsSync(cliDir()), false);
+});
+
+test('obtainCli_WhenItReusesACompleteCopy_StillRemovesAbandonedLeftovers', async () => {
+  plantComplete('installed');
+  const abandoned = plantLeftover(`${VERSION}.staging-${DEAD_PID}-0a0b`, 2 * DAY_MS);
+
+  const exe = await install();
+
+  assert.equal(exe, path.join(cliDir(), 'codecharter'));
+  assert.equal(downloads, 0);
+  assert.equal(fs.existsSync(abandoned), false);
+});
+
+test('obtainCli_WhenTheMovedAsideCopyCannotBeTouched_StillPublishes', async () => {
+  writeCliFiles(cliDir(), 'half');
+  const realUtimes = fs.utimesSync;
+  fs.utimesSync = () => {
+    throw eperm('utime', cliDir());
+  };
+  try {
+    const exe = await install();
+    assert.equal(exe, path.join(cliDir(), 'codecharter'));
+  } finally {
+    fs.utimesSync = realUtimes;
+  }
+});
+
+test('clock_WhenAskedToSleep_ResolvesAfterTheDelay', async () => {
+  const started = Date.now();
+  await saved.sleep(20);
+  assert.ok(Date.now() - started >= 15);
 });

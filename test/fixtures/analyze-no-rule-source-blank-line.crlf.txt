@@ -1,0 +1,5 @@
+No rule source is configured: run 'codecharter config init' to scaffold a config, then 'codecharter config add profiles codeguard/csharp-all@^1.2' to add a platform profile (or declare a 'rules:' directory).
+Inconclusive run: 0 rules evaluated, 0 resolved. This is NOT a clean result.
+  [no-rule-source] No rule source is configured, so there was nothing to check.
+
+[warn] the CLI wrote this unindented line after a blank line

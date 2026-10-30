@@ -137,7 +137,7 @@ test('testTableRows: a newline in a name or a reason cannot break out of the row
   assert.doesNotMatch(rows[2], /[\r\n]/, 'the row stays on one line');
   assert.match(
     rows[2],
-    /^\| A\.Tests \\\| \*\*Σ 9 projects\*\* \\\| ✅ \\\| 9 \\\| 9 \\\| 0 \\\| 0 \\\| \| ❌ crashed ## Everything is fine \|/
+    /^\| A\.Tests \\\| \\\*\\\*Σ 9 projects\\\*\\\* \\\| ✅ \\\| 9 \\\| 9 \\\| 0 \\\| 0 \\\| \| ❌ crashed \\#\\# Everything is fine \|/
   );
 });
 

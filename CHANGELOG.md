@@ -19,18 +19,33 @@ the latest release in its line.
   a per-run staging folder next to it and moved into place with one atomic
   rename. A job that loses that race uses the copy the other job published.
   A folder without the marker (half-extracted, or installed in place by an
-  older action version) is never run: it is replaced, or, while a job still
-  runs from it, this run uses its own staging copy and warns. The Actions
+  older action version) is never run. It is moved aside and replaced, and the
+  moved-aside copy is kept for a day before it is removed, because Linux and
+  macOS allow the move while a job still runs from it. On Windows, where the
+  move fails while the copy is in use, this run uses its own staging copy and
+  warns. The Actions
   cache entry is now restored into a runner-local folder under `RUNNER_TEMP`,
   so the first run after upgrading downloads the CLI once more. With
   `cache: false` the CLI is downloaded into the run's temp folder and the tool
   cache is not touched.
-- Staging and moved-aside CLI copies that killed jobs left in the tool cache
-  are removed when a later run publishes the same version, but only when they
-  are older than 24 hours and the process that created them no longer runs; a
-  copy that is still in use is left alone. When a copy cannot be published,
-  the warning now names the real cause and the error code (a marker-less copy
-  that is in use, or a rename that keeps failing).
+- Staging and moved-aside CLI copies left in the tool cache are removed by a
+  later run of the same version, whether it installs or reuses that version,
+  but only once they are older than 24 hours and the process that created
+  them no longer runs; a copy that is still in use is left alone. A failed
+  install (rejected API key, network error, SHA mismatch, full disk) removes
+  its staging folder and leaves nothing in the tool cache. A publish that hits
+  a short lock (`EPERM`, `EBUSY`, `EACCES`, e.g. a virus scanner opening the
+  fresh DLLs) waits 250 ms, 1 s and 2 s between attempts. When a copy still
+  cannot be published, the warning names the real cause and the error code (a
+  marker-less copy that is in use, or a rename that keeps failing).
+- Text taken from the CLI's report or log is now escaped in the PR comment and
+  the check summary: inconclusive-run detail, unresolved sources and reasons,
+  rule-source names, file names in links, method and project names in tables.
+  Backticks, `<T>`-style generics and underscores render literally instead of
+  as code spans, swallowed HTML tags or italics, and an `@name` in that text
+  can no longer mention anyone. The reason codes of a run without a report
+  are read only from indented lines, so a CRLF log with an unindented
+  `[word]` line no longer adds a bogus code.
 - A run with no rule source at all no longer fails as "CodeCharter failed
   (exit code 2) without producing results", with hints about a missing .NET
   SDK or a bad `solution` path. The CLI writes no JSON report for that run, so

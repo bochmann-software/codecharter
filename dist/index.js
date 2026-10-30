@@ -70142,6 +70142,9 @@ var io = { ...io_exports };
 var tc = { ...tool_cache_exports };
 var cache = { ...cache_exports };
 var github = { ...github_exports };
+var clock = {
+  sleep: (ms) => new Promise((resolve2) => setTimeout(resolve2, ms))
+};
 
 // src/index.js
 var MAX_COMMENT_ROWS = 100;
@@ -70149,7 +70152,10 @@ var MAX_COMMENT_CHARS = 6e4;
 var CLI_EXIT_CONFIG_INVALID = 10;
 var EM_DASH = "\u2014";
 function escapeCell(value) {
-  return String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+  return escapeInline(value);
+}
+function escapeInline(value) {
+  return String(value ?? "").replace(/[\r\n]+/g, " ").replace(/[\\`*_[\]<>#|~&]/g, "\\$&").replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9])/g, "$1@\u200B");
 }
 function commentMarker(discriminator) {
   const tag = crypto5.createHash("sha1").update(discriminator || "default").digest("hex").slice(0, 12);
@@ -70227,7 +70233,16 @@ function findExecutable(root, isWindows2) {
   return null;
 }
 var CLI_COMPLETE_MARKER = ".codecharter-complete";
-var PUBLISH_ATTEMPTS = 3;
+var PUBLISH_BACKOFF_MS = [250, 1e3, 2e3];
+var TRANSIENT_RENAME_ERRORS = /* @__PURE__ */ new Set(["EPERM", "EBUSY", "EACCES"]);
+function touchFolder(dir) {
+  try {
+    const now = /* @__PURE__ */ new Date();
+    fs10.utimesSync(dir, now, now);
+  } catch (err) {
+    core.debug(`Could not touch ${dir}: ${err instanceof Error ? err.message : err}`);
+  }
+}
 function completeExecutable(dir, isWindows2) {
   if (!fs10.existsSync(path14.join(dir, CLI_COMPLETE_MARKER))) return null;
   return findExecutable(dir, isWindows2);
@@ -70284,9 +70299,9 @@ async function publishCli(stagingDir, cliDir, isWindows2) {
   return exe;
 }
 async function publishOrKeep(stagingDir, cliDir, isWindows2) {
-  let failure = null;
+  let failure;
   let blocked = false;
-  for (let attempt = 0; attempt < PUBLISH_ATTEMPTS; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     failure = tryRename(stagingDir, cliDir);
     if (!failure) return findExecutable(cliDir, isWindows2);
     const winner = completeExecutable(cliDir, isWindows2);
@@ -70295,20 +70310,19 @@ async function publishOrKeep(stagingDir, cliDir, isWindows2) {
       await io.rmRF(stagingDir);
       return winner;
     }
-    if (!fs10.existsSync(cliDir)) continue;
-    const aside = siblingPath(cliDir, "stale");
-    const asideFailure = tryRename(cliDir, aside);
-    if (asideFailure) {
-      if (!fs10.existsSync(cliDir)) continue;
-      failure = asideFailure;
-      blocked = true;
-      break;
+    const inTheWay = fs10.existsSync(cliDir);
+    if (inTheWay) {
+      const aside = siblingPath(cliDir, "stale");
+      const asideFailure = tryRename(cliDir, aside);
+      if (asideFailure && fs10.existsSync(cliDir)) {
+        failure = asideFailure;
+        blocked = true;
+        break;
+      }
+      if (!asideFailure) touchFolder(aside);
     }
-    try {
-      await io.rmRF(aside);
-    } catch (err) {
-      core.debug(`Could not remove the stale CLI copy ${aside}: ${err instanceof Error ? err.message : err}`);
-    }
+    if (attempt >= PUBLISH_BACKOFF_MS.length) break;
+    if (!inTheWay && TRANSIENT_RENAME_ERRORS.has(failure)) await clock.sleep(PUBLISH_BACKOFF_MS[attempt]);
   }
   const cause = blocked ? `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be moved aside (${failure}), most likely because a job is still running from it.` : `This run's CodeCharter CLI copy could not be moved into the tool cache at ${cliDir} (${failure}).`;
   const remedy = blocked ? "What to do: delete that folder once no job uses it, so later runs share one copy again." : "What to do: check that the tool cache folder is writable and not held by a virus scanner or indexer.";
@@ -70707,7 +70721,7 @@ function formatDrift(drift) {
 }
 function inconclusiveReasonsFromLog(output) {
   if (!/^Inconclusive run:/m.test(output || "")) return null;
-  const codes = [...output.matchAll(/^\s+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
+  const codes = [...output.matchAll(/^[ \t]+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
   return [...new Set(codes)];
 }
 function configErrorsFromLog(output) {
@@ -70770,7 +70784,7 @@ function severityBadge(severity) {
 function locationLink(violation, workspace, repoFull, sha) {
   const rel = displayPath(violation.filePath, workspace);
   if (!rel) return "-";
-  const name = rel.split("/").pop();
+  const name = escapeInline(rel.split("/").pop());
   if (violation.lineNumber) {
     return `[${name}:${violation.lineNumber}](https://github.com/${repoFull}/blob/${sha}/${rel}#L${violation.lineNumber})`;
   }
@@ -70815,16 +70829,19 @@ function buildComment(report, counts, workspace, opts) {
   const reach = reachFromReport(report);
   if (reach) {
     if (reach.isInconclusive) {
-      const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
+      const reasons = reach.reasons.length ? reach.reasons.map(escapeInline).join(", ") : "no reason was reported";
       lines.push(`**Inconclusive run** \u2014 ${reasons}.`, "");
-      for (const line of formatDrift(reach.drift)) lines.push(`- ${line}`);
-      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${formatUnresolvedSources(reach).join(", ")}`);
+      for (const line of formatDrift(reach.drift)) lines.push(`- ${escapeInline(line)}`);
+      if (reach.unresolvedSources.length)
+        lines.push(`- Unresolved: ${formatUnresolvedSources(reach).map(escapeInline).join(", ")}`);
       if (reach.coreLibraryUnresolvedProjects.length)
-        lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(", ")}`);
-      for (const line of reach.detail) lines.push(`- ${line}`);
+        lines.push(
+          `- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.map(escapeInline).join(", ")}`
+        );
+      for (const line of reach.detail) lines.push(`- ${escapeInline(line)}`);
       lines.push("");
     } else {
-      const sources = formatRuleSources(reach.ruleSources);
+      const sources = escapeInline(formatRuleSources(reach.ruleSources));
       const parts = [];
       if (reach.evaluated !== void 0) parts.push(`${reach.evaluated} rule(s) evaluated`);
       if (reach.resolved !== void 0 && reach.resolved !== reach.evaluated) parts.push(`${reach.resolved} resolved`);
@@ -71141,7 +71158,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
     if (truncated) break;
     lines.push(
       "<details>",
-      `<summary>${file} (${regions.length} ${label})</summary>`,
+      `<summary>${escapeInline(file)} (${regions.length} ${label})</summary>`,
       "",
       "| Lines | Method | Location |",
       "|-------|--------|----------|"
@@ -71156,7 +71173,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
       const last = numbers[numbers.length - 1];
       const span = numbers.length > 1 ? `${first}-${last}` : `${first ?? "?"}`;
       const method = escapeCell(region.method);
-      const link = repoFull && sha && first ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})` : `${file}:${first ?? "?"}`;
+      const link = repoFull && sha && first ? `[${escapeInline(file)}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})` : `${escapeInline(file)}:${first ?? "?"}`;
       lines.push(`| ${span} | ${method} | ${link} |`);
       rendered++;
     }
@@ -71335,6 +71352,7 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
     const installed = completeExecutable(cliDir, isWindows2);
     if (installed) {
       core.info(`Using the CodeCharter CLI from the tool cache (${platform3}, ${keyVersion}).`);
+      await removeLeftoverCopies(cliDir, null);
       return installed;
     }
   }
@@ -71351,12 +71369,7 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
       );
     }
   }
-  let installDir = path14.join(tmp, "cli");
-  if (cacheEnabled) {
-    await io.mkdirP(path14.dirname(cliDir));
-    installDir = siblingPath(cliDir, "staging");
-  }
-  await io.mkdirP(installDir);
+  const installDir = cacheEnabled ? siblingPath(cliDir, "staging") : path14.join(tmp, "cli");
   const transitDir = path14.join(process.env.RUNNER_TEMP || tmp, "codecharter-cli", platform3, keyVersion);
   let fromCache = false;
   if (canCache) {
@@ -71371,37 +71384,46 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
       core.debug(`Cache restore skipped: ${err instanceof Error ? err.message : err}`);
     }
   }
+  let archive = null;
   if (!fromCache) {
     core.info(`Downloading CodeCharter CLI (${platform3}, ${downloadVersion}) from ${portal}`);
     const url2 = `${portal}/api/v1/cli/${platform3}/${downloadVersion}`;
-    const { archive, expectedSha } = await downloadArchive(url2, apiKey, tmp, isWindows2);
-    await verifySha(archive, manifestSha || expectedSha);
-    const extractDir = canCache ? transitDir : installDir;
-    if (canCache) {
-      await io.rmRF(transitDir);
-      await io.mkdirP(transitDir);
-    }
-    if (isWindows2) {
-      await tc.extractZip(archive, extractDir);
-    } else {
-      await tc.extractTar(archive, extractDir);
-    }
-    if (!findExecutable(extractDir, isWindows2)) {
-      await io.rmRF(installDir);
-      throw new Error("Extracted archive does not contain a codecharter executable.");
-    }
+    const downloaded = await downloadArchive(url2, apiKey, tmp, isWindows2);
+    await verifySha(downloaded.archive, manifestSha || downloaded.expectedSha);
+    archive = downloaded.archive;
   }
-  if (canCache) fs10.cpSync(transitDir, installDir, { recursive: true });
-  const staged = findExecutable(installDir, isWindows2);
-  if (!isWindows2) fs10.chmodSync(staged, 493);
-  let exe = staged;
-  if (cacheEnabled) {
-    fs10.writeFileSync(
-      path14.join(installDir, CLI_COMPLETE_MARKER),
-      JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: (/* @__PURE__ */ new Date()).toISOString() })
-    );
-    exe = await publishCli(installDir, cliDir, isWindows2);
+  let staged;
+  try {
+    await io.mkdirP(installDir);
+    if (archive) {
+      const extractDir = canCache ? transitDir : installDir;
+      if (canCache) {
+        await io.rmRF(transitDir);
+        await io.mkdirP(transitDir);
+      }
+      if (isWindows2) {
+        await tc.extractZip(archive, extractDir);
+      } else {
+        await tc.extractTar(archive, extractDir);
+      }
+      if (!findExecutable(extractDir, isWindows2)) {
+        throw new Error("Extracted archive does not contain a codecharter executable.");
+      }
+    }
+    if (canCache) fs10.cpSync(transitDir, installDir, { recursive: true });
+    staged = findExecutable(installDir, isWindows2);
+    if (!isWindows2) fs10.chmodSync(staged, 493);
+    if (cacheEnabled) {
+      fs10.writeFileSync(
+        path14.join(installDir, CLI_COMPLETE_MARKER),
+        JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: (/* @__PURE__ */ new Date()).toISOString() })
+      );
+    }
+  } catch (err) {
+    await io.rmRF(installDir);
+    throw err;
   }
+  const exe = cacheEnabled ? await publishCli(installDir, cliDir, isWindows2) : staged;
   if (canCache && !fromCache) {
     try {
       await cache.saveCache([transitDir], cacheKey);
@@ -71860,6 +71882,7 @@ export {
   discoverSolutions,
   displayPath,
   downloadArchive,
+  escapeInline,
   failOnBadge,
   failOnColor,
   fetchManifest,

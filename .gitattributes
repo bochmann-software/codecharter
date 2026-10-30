@@ -1,3 +1,4 @@
 * text=auto eol=lf
 *.js text eol=lf
 dist/** text eol=lf
+test/fixtures/*.crlf.txt -text
