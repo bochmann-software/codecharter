@@ -353,3 +353,35 @@ test('obtainCli_WhenTheArchiveHasNoExecutable_FailsAndLeavesNoStaging', async ()
   assert.deepEqual(stagingLeftovers(), []);
   assert.equal(fs.existsSync(cliDir()), false, 'nothing is published');
 });
+
+test('obtainCli_WhenNoCompressorIsOnPath_SkipsTheActionsCacheAndStillPublishes', async () => {
+  cache.isFeatureAvailable = () => true;
+  io.which = async () => '';
+  cache.restoreCache = async () => assert.fail('the cache is skipped without zstd or gzip');
+  cache.saveCache = async () => assert.fail('the cache is skipped without zstd or gzip');
+
+  const exe = await install();
+
+  assert.equal(exe, path.join(cliDir(), 'codecharter'));
+  assert.equal(downloads, 1);
+  assert.match(warnings[0], /neither `zstd` nor `gzip` was found/);
+  assert.equal(fs.existsSync(path.join(runnerTemp, 'codecharter-cli')), false, 'no transit dir without the cache');
+});
+
+test('obtainCli_WhenTheCacheRestoreThrows_DownloadsIntoACleanTransitDir', async () => {
+  cache.isFeatureAvailable = () => true;
+  io.which = async () => '/usr/bin/gzip';
+  cache.restoreCache = async (paths) => {
+    fs.writeFileSync(path.join(paths[0], 'partial.bin'), 'half a restore');
+    throw new Error('cache service unavailable');
+  };
+  const savedPaths = [];
+  cache.saveCache = async (paths) => savedPaths.push(paths[0]);
+
+  const exe = await install();
+
+  assert.equal(exe, path.join(cliDir(), 'codecharter'));
+  assert.equal(downloads, 1);
+  assert.equal(fs.existsSync(path.join(savedPaths[0], 'partial.bin')), false, 'a failed restore is cleared');
+  assert.equal(fs.existsSync(path.join(cliDir(), 'partial.bin')), false);
+});
