@@ -17,6 +17,9 @@ const MAX_COMMENT_ROWS = 100;
  */
 const MAX_COMMENT_CHARS = 60000;
 
+/** The CLI exit code of an analyze run whose `.codecharter` config is invalid. */
+const CLI_EXIT_CONFIG_INVALID = 10;
+
 /** Placeholder for a table cell whose number the report does not carry. */
 const EM_DASH = '—';
 
@@ -163,14 +166,60 @@ function siblingPath(dir, label) {
   return `${dir}.${label}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-/** Renames a directory, reporting failure instead of throwing. */
+/** Renames a directory; returns the error code (or message) on failure, null on success. */
 function tryRename(from, to) {
   try {
     fs.renameSync(from, to);
-    return true;
+    return null;
   } catch (err) {
     core.debug(`Could not rename ${from} to ${to}: ${err instanceof Error ? err.message : err}`);
-    return false;
+    return (err && err.code) || (err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Leftover staging/stale copies younger than this may still be extracting or running. */
+const LEFTOVER_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Whether a process with this id runs on this machine (EPERM: it runs, as another user). */
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+/**
+ * Removes the staging and moved-aside copies of this version that jobs left
+ * behind when they were killed mid-install or could not delete them. Only a
+ * folder older than LEFTOVER_MIN_AGE_MS whose creating process no longer runs
+ * is removed, never `keep` (this run's own copy); a folder that cannot be
+ * removed (a job still runs from it) is left alone. Best-effort, never fails.
+ */
+async function removeLeftoverCopies(cliDir, keep, now = Date.now()) {
+  const parent = path.dirname(cliDir);
+  const prefix = `${path.basename(cliDir)}.`;
+  const pattern = /^(?:staging|stale)-(\d+)-[0-9a-f]+$/;
+  let names;
+  try {
+    names = fs.readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const match = pattern.exec(name.slice(prefix.length));
+    const full = path.join(parent, name);
+    if (!match || full === keep) continue;
+    try {
+      if (now - fs.statSync(full).mtimeMs < LEFTOVER_MIN_AGE_MS) continue;
+      if (processAlive(Number(match[1]))) continue;
+      await io.rmRF(full);
+      core.debug(`Removed the leftover CLI copy ${full}.`);
+    } catch (err) {
+      core.debug(`Kept the leftover CLI copy ${full}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 }
 
@@ -183,13 +232,24 @@ function tryRename(from, to) {
  *     the staging copy is discarded;
  *   - an unmarked leftover at the target (half-extracted, or installed in place
  *     by an older action version) is moved aside and replaced;
- *   - when the leftover cannot be moved (Windows refuses while a job runs from
- *     it), this job runs from its own staging copy and the leftover stays.
+ *   - when the copy cannot be published (the leftover cannot be moved because
+ *     a job runs from it, or the rename itself keeps failing), this job runs
+ *     from its own staging copy and the warning names the error.
+ * Afterwards, leftover copies of killed jobs are removed (removeLeftoverCopies).
  * Returns the executable to run.
  */
 async function publishCli(stagingDir, cliDir, isWindows) {
+  const exe = await publishOrKeep(stagingDir, cliDir, isWindows);
+  await removeLeftoverCopies(cliDir, stagingDir);
+  return exe;
+}
+
+async function publishOrKeep(stagingDir, cliDir, isWindows) {
+  let failure = null;
+  let blocked = false;
   for (let attempt = 0; attempt < PUBLISH_ATTEMPTS; attempt++) {
-    if (tryRename(stagingDir, cliDir)) return findExecutable(cliDir, isWindows);
+    failure = tryRename(stagingDir, cliDir);
+    if (!failure) return findExecutable(cliDir, isWindows);
 
     const winner = completeExecutable(cliDir, isWindows);
     if (winner) {
@@ -197,11 +257,16 @@ async function publishCli(stagingDir, cliDir, isWindows) {
       await io.rmRF(stagingDir);
       return winner;
     }
+    // The rename failed with nothing at the target: retry it as it is.
+    if (!fs.existsSync(cliDir)) continue;
 
     const aside = siblingPath(cliDir, 'stale');
-    if (!tryRename(cliDir, aside)) {
+    const asideFailure = tryRename(cliDir, aside);
+    if (asideFailure) {
       // Gone in the meantime (another job cleared it): just try again.
       if (!fs.existsSync(cliDir)) continue;
+      failure = asideFailure;
+      blocked = true;
       break;
     }
     try {
@@ -211,11 +276,15 @@ async function publishCli(stagingDir, cliDir, isWindows) {
     }
   }
 
+  const cause = blocked
+    ? `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be ` +
+      `moved aside (${failure}), most likely because a job is still running from it.`
+    : `This run's CodeCharter CLI copy could not be moved into the tool cache at ${cliDir} (${failure}).`;
+  const remedy = blocked
+    ? 'What to do: delete that folder once no job uses it, so later runs share one copy again.'
+    : 'What to do: check that the tool cache folder is writable and not held by a virus scanner or indexer.';
   core.warning(
-    `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be ` +
-      'replaced, most likely because a job installed by an older action version is still running from it. ' +
-      `This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. ` +
-      'What to do: delete that folder once no job uses it, so later runs share one copy again.'
+    `${cause} This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. ${remedy}`
   );
   return findExecutable(stagingDir, isWindows);
 }
@@ -660,6 +729,123 @@ function readJson(filePath) {
   }
 }
 
+/** Most reach-detail lines shown; the rest are counted, never silently dropped. */
+const MAX_REACH_DETAIL = 20;
+
+/** Longest single reach-detail line before it is cut. */
+const MAX_REACH_DETAIL_CHARS = 300;
+
+/** `run.reach` keys that are read on their own, so the generic detail skips them. */
+const REACH_KNOWN_KEYS = new Set([
+  'configured',
+  'resolved',
+  'evaluated',
+  'unresolvedSources',
+  'drift',
+  'coreLibraryUnresolvedProjects',
+  'isInconclusive',
+  'inconclusiveReasons',
+  'projectLoadFailures',
+  'workspaceLoadFailures',
+  'unevaluableRules',
+  'ruleFaults',
+]);
+
+/** How each `ruleFaults[].kind` reads in a sentence. */
+const RULE_FAULT_KINDS = {
+  'item-skipped': 'threw on some elements and skipped them',
+  'rule-aborted': 'threw and reported nothing',
+  'engine-defect': 'hit an engine defect and reported nothing',
+};
+
+/** One line of text: line breaks and runs of whitespace collapse, long text is cut. */
+function oneLine(value) {
+  const text = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > MAX_REACH_DETAIL_CHARS ? `${text.slice(0, MAX_REACH_DETAIL_CHARS - 1)}…` : text;
+}
+
+/** A plain string, or '' for anything else. */
+function text(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+/** "unrestoredProjects" → "unrestored projects". */
+function humanizeKey(key) {
+  return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
+/** A reach entry of a shape this version does not know, as readable text. */
+function describeEntry(entry) {
+  if (entry === null || typeof entry !== 'object') return String(entry);
+  return Object.entries(entry)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
+    .join(', ');
+}
+
+/** Where a faulted rule failed: the first elements it skipped, e.g. "method Lib.Calc.Add (Calc.cs:7)". */
+function faultElements(elements) {
+  if (!Array.isArray(elements)) return '';
+  const described = elements
+    .filter((e) => e && typeof e === 'object')
+    .map((e) => {
+      const name = [text(e.namespace), text(e.name)].filter(Boolean).join('.');
+      const file = text(e.filePath) ? path.basename(e.filePath.replace(/\\/g, '/')) : '';
+      const where = file ? ` (${file}${Number.isFinite(e.line) ? `:${e.line}` : ''})` : '';
+      return `${[text(e.kind).toLowerCase(), name].filter(Boolean).join(' ')}${where}`;
+    })
+    .filter(Boolean);
+  const shown = described.slice(0, 3);
+  const more = described.length - shown.length;
+  return shown.length ? ` on ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : '';
+}
+
+/** One sentence per `run.reach.ruleFaults` entry (CLI >= 1.7.0). */
+function describeRuleFault(f) {
+  const kind = RULE_FAULT_KINDS[f.kind] || `faulted (${text(f.kind) || 'unknown kind'})`;
+  const times = Number.isFinite(f.count) && f.count > 1 ? ` ${f.count} times` : '';
+  const types = Array.isArray(f.exceptionTypes) && f.exceptionTypes.length ? ` (${f.exceptionTypes.join(', ')})` : '';
+  const at =
+    f.expression && Number.isFinite(f.expression.line)
+      ? ` at rule line ${f.expression.line}${Number.isFinite(f.expression.column) ? `:${f.expression.column}` : ''}`
+      : '';
+  const message = text(f.message) ? `: ${f.message}` : '';
+  return `Rule ${text(f.ruleId) || 'unknown'} ${kind}${times}${types}${at}${faultElements(f.elements)}${message}`;
+}
+
+/**
+ * Which rule, project or workspace part made a run inconclusive, and why, from
+ * the detail arrays CLI 1.7.0 adds to `run.reach`: projectLoadFailures,
+ * workspaceLoadFailures, unevaluableRules and ruleFaults. Any other non-empty
+ * array in `run.reach` (a reason a later CLI adds) is rendered generically from
+ * its key and fields, so it is never dropped. Capped at MAX_REACH_DETAIL lines.
+ */
+function reachDetail(reach) {
+  const list = (key) => (Array.isArray(reach[key]) ? reach[key] : []);
+  const lines = [
+    ...list('projectLoadFailures').map(
+      (p) => `Project ${text(p && p.project) || 'unknown'} did not load: ${text(p && p.cause) || 'no cause given'}`
+    ),
+    ...list('workspaceLoadFailures').map((w) => `Workspace load failure: ${describeEntry(w)}`),
+    ...list('unevaluableRules').map(
+      (r) =>
+        `Rule ${text(r && r.ruleId) || 'unknown'} could not be evaluated: ${text(r && r.reason) || 'no reason given'}`
+    ),
+    ...list('ruleFaults')
+      .filter((f) => f && typeof f === 'object')
+      .map(describeRuleFault),
+  ];
+  for (const [key, value] of Object.entries(reach)) {
+    if (REACH_KNOWN_KEYS.has(key) || !Array.isArray(value)) continue;
+    for (const entry of value) lines.push(`${humanizeKey(key)}: ${describeEntry(entry)}`);
+  }
+  const shown = lines.slice(0, MAX_REACH_DETAIL).map(oneLine);
+  if (lines.length > shown.length) shown.push(`…and ${lines.length - shown.length} more (see the CodeCharter log)`);
+  return shown;
+}
+
 /**
  * Extracts the run's rule-source reach from a JSON report (CLI >= 1.6.4):
  * `run.reach` (configured/resolved/evaluated rule counts, unresolved sources,
@@ -687,6 +873,7 @@ function reachFromReport(report) {
       ? reach.coreLibraryUnresolvedProjects
       : [],
     ruleSources: Array.isArray(run.ruleSources) ? run.ruleSources : [],
+    detail: reachDetail(reach),
   };
 }
 
@@ -765,6 +952,24 @@ function inconclusiveReasonsFromLog(output) {
   if (!/^Inconclusive run:/m.test(output || '')) return null;
   const codes = [...output.matchAll(/^\s+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
   return [...new Set(codes)];
+}
+
+/**
+ * The CLI's config errors from its log (`Config error in <file>: <error>`),
+ * each once, for a run that exited 10 (invalid config) without a report.
+ * The file is the first `: `-separated part, so an error text may contain
+ * colons of its own.
+ */
+function configErrorsFromLog(output) {
+  const seen = new Set();
+  const errors = [];
+  for (const m of (output || '').matchAll(/^Config error in (.+?): (.+?)\s*$/gm)) {
+    const line = `${m[1].trim()}: ${m[2].trim()}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    errors.push({ file: m[1].trim(), error: m[2].trim() });
+  }
+  return errors;
 }
 
 /**
@@ -907,6 +1112,7 @@ function buildComment(report, counts, workspace, opts) {
       if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${formatUnresolvedSources(reach).join(', ')}`);
       if (reach.coreLibraryUnresolvedProjects.length)
         lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(', ')}`);
+      for (const line of reach.detail) lines.push(`- ${line}`);
       lines.push('');
     } else {
       const sources = formatRuleSources(reach.ruleSources);
@@ -2346,6 +2552,7 @@ async function run() {
         const driftDetail = [
           ...formatDrift(reach.drift),
           ...formatUnresolvedSources(reach).map((u) => `unresolved: ${u}`),
+          ...reach.detail,
         ].join('; ');
         core.setFailed(
           `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}` +
@@ -2365,6 +2572,22 @@ async function run() {
           `CodeCharter found ${c.error} error / ${c.warn} warning / ${c.info} info finding(s) and the ` +
             `\`fail-on: ${failOn}\` gate failed the build. What to do: fix the findings above, or relax ` +
             '`fail-on` (`warn`, `info`, or `never`) to stop them from failing the build.'
+        );
+      } else if (code === CLI_EXIT_CONFIG_INVALID) {
+        // The CLI rejected its configuration before analyzing anything; its
+        // stderr names the file and the error.
+        const errors = configErrorsFromLog(output);
+        const files = [...new Set(errors.map((e) => e.file))];
+        const shown = errors.slice(0, 5).map((e) => `${e.file}: ${e.error.replace(/\.$/, '')}`);
+        const more = errors.length - shown.length;
+        core.setFailed(
+          `CodeCharter rejected its configuration (exit code ${code}), so nothing was analyzed and no check, ` +
+            'comment or SARIF was produced' +
+            (shown.length
+              ? `: ${shown.join('; ')}${more > 0 ? `; and ${more} more` : ''}. `
+              : '. The CLI did not name the error; see the CodeCharter log above. ') +
+            `What to do: fix ${files.length ? files.map((f) => `\`${f}\``).join(', ') : '`.codecharter/config.yml`'} ` +
+            'as the error says (a `.codecharter/config.local.yml` next to it is read too), then re-run.'
         );
       } else {
         // No report: a real failure (crash, missing SDK, bad solution path,
@@ -2455,15 +2678,18 @@ export {
   findExecutable,
   completeExecutable,
   publishCli,
+  removeLeftoverCopies,
   CLI_COMPLETE_MARKER,
   discoverSolutions,
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
   reachFromReport,
   inconclusiveReasonsFromLog,
+  configErrorsFromLog,
   formatRuleSources,
   formatDrift,
   formatUnresolvedSources,
+  reachDetail,
   resolveDiffArgs,
   fetchManifest,
   obtainCli,

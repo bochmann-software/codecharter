@@ -16,7 +16,9 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 
 import { cache, io, core, tc, HttpClient } from '../src/deps.js';
-import { obtainCli } from '../src/index.js';
+import * as action from '../src/index.js';
+
+const { obtainCli } = action;
 
 // The completion marker the action writes last into a published CLI copy.
 const CLI_COMPLETE_MARKER = '.codecharter-complete';
@@ -255,7 +257,7 @@ test('obtainCli_WhenAnUnmarkedFolderIsInUseAndCannotMove_RunsFromItsOwnStagingCo
   assert.ok(fs.existsSync(path.join(path.dirname(exe), CLI_COMPLETE_MARKER)));
   assert.equal(fs.readFileSync(path.join(cliDir(), 'codecharter.dll'), 'utf8'), 'old-action');
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /without a completion marker/);
+  assert.match(warnings[0], /without a completion marker .* cannot be moved aside \(EPERM\)/);
 });
 
 test('obtainCli_WhenAMovedAsideFolderCannotBeRemoved_StillPublishes', async () => {
@@ -384,4 +386,84 @@ test('obtainCli_WhenTheCacheRestoreThrows_DownloadsIntoACleanTransitDir', async 
   assert.equal(downloads, 1);
   assert.equal(fs.existsSync(path.join(savedPaths[0], 'partial.bin')), false, 'a failed restore is cleared');
   assert.equal(fs.existsSync(path.join(cliDir(), 'partial.bin')), false);
+});
+
+test('obtainCli_WhenTheRenameKeepsFailingWithNothingInTheWay_WarnsWithTheErrorCode', async () => {
+  // A virus scanner holding the fresh staging copy, for instance.
+  fs.renameSync = (from) => {
+    const err = new Error(`EBUSY: resource busy or locked, rename '${from}'`);
+    err.code = 'EBUSY';
+    throw err;
+  };
+
+  const exe = await install();
+
+  assert.notEqual(path.dirname(exe), cliDir());
+  assert.equal(fs.existsSync(cliDir()), false);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /could not be moved into the tool cache at .* \(EBUSY\)/);
+  assert.doesNotMatch(warnings[0], /completion marker/);
+});
+
+// A process id no machine hands out, so its staging copy counts as abandoned.
+const DEAD_PID = 2147483646;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function plantLeftover(name, ageMs) {
+  const dir = path.join(path.dirname(cliDir()), name);
+  writeCliFiles(dir, 'leftover');
+  const when = new Date(Date.now() - ageMs);
+  fs.utimesSync(dir, when, when);
+  return dir;
+}
+
+test('obtainCli_WhenKilledJobsLeftOldCopies_RemovesOnlyAbandonedOnesOfThisVersion', async () => {
+  const oldStaging = plantLeftover(`${VERSION}.staging-${DEAD_PID}-aa11`, 2 * DAY_MS);
+  const oldStale = plantLeftover(`${VERSION}.stale-${DEAD_PID}-bb22`, 2 * DAY_MS);
+  const young = plantLeftover(`${VERSION}.staging-${DEAD_PID}-cc33`, 60 * 60 * 1000);
+  const ownProcess = plantLeftover(`${VERSION}.staging-${process.pid}-dd44`, 2 * DAY_MS);
+  const otherVersion = plantLeftover(`1.6.8.staging-${DEAD_PID}-ee55`, 2 * DAY_MS);
+  const unrelated = plantLeftover(`${VERSION}.backup`, 2 * DAY_MS);
+
+  await install();
+
+  assert.equal(fs.existsSync(oldStaging), false, 'an abandoned staging copy is removed');
+  assert.equal(fs.existsSync(oldStale), false, 'an abandoned moved-aside copy is removed');
+  assert.equal(fs.existsSync(young), true, 'a copy younger than a day may still be in use');
+  assert.equal(fs.existsSync(ownProcess), true, 'a copy of a running process may be in use');
+  assert.equal(fs.existsSync(otherVersion), true, 'other versions are not touched');
+  assert.equal(fs.existsSync(unrelated), true, 'folders of another shape are not touched');
+  assert.ok(fs.existsSync(path.join(cliDir(), CLI_COMPLETE_MARKER)));
+});
+
+test('obtainCli_WhenAnAbandonedCopyIsStillInUse_LeavesItAndStillPublishes', async () => {
+  const inUseLeftover = plantLeftover(`${VERSION}.staging-${DEAD_PID}-ff66`, 2 * DAY_MS);
+  lockCopy(inUseLeftover);
+
+  const exe = await install();
+
+  assert.equal(exe, path.join(cliDir(), 'codecharter'));
+  assert.equal(fs.existsSync(inUseLeftover), true);
+});
+
+test('obtainCli_WhenTheRunFallsBackToItsStagingCopy_NeverRemovesIt', async () => {
+  writeCliFiles(cliDir(), 'old-action');
+  lockCopy(cliDir());
+  fs.renameSync = (from, to) => {
+    if (isInUse(from)) throw eperm('rename', from);
+    return saved.renameSync(from, to);
+  };
+
+  const exe = await install();
+  // A day later the same run's copy is still its own: removal skips it by path.
+  const staging = path.dirname(exe);
+  const later = new Date(Date.now() - 2 * DAY_MS);
+  fs.utimesSync(staging, later, later);
+  await action.removeLeftoverCopies(cliDir(), staging);
+
+  assert.equal(fs.existsSync(exe), true);
+});
+
+test('removeLeftoverCopies_WhenTheVersionsFolderIsMissing_DoesNothing', async () => {
+  await action.removeLeftoverCopies(path.join(toolCache, 'absent', VERSION), null);
 });

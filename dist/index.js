@@ -29183,8 +29183,8 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addRaw(text, addEOL = false) {
-    this._buffer += text;
+  addRaw(text2, addEOL = false) {
+    this._buffer += text2;
     return addEOL ? this.addEOL() : this;
   }
   /**
@@ -29280,10 +29280,10 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addHeading(text, level) {
+  addHeading(text2, level) {
     const tag = `h${level}`;
     const allowedTag = ["h1", "h2", "h3", "h4", "h5", "h6"].includes(tag) ? tag : "h1";
-    const element = this.wrap(allowedTag, text);
+    const element = this.wrap(allowedTag, text2);
     return this.addRaw(element).addEOL();
   }
   /**
@@ -29312,9 +29312,9 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addQuote(text, cite) {
+  addQuote(text2, cite) {
     const attrs = Object.assign({}, cite && { cite });
-    const element = this.wrap("blockquote", text, attrs);
+    const element = this.wrap("blockquote", text2, attrs);
     return this.addRaw(element).addEOL();
   }
   /**
@@ -29325,8 +29325,8 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addLink(text, href) {
-    const element = this.wrap("a", text, { href });
+  addLink(text2, href) {
+    const element = this.wrap("a", text2, { href });
     return this.addRaw(element).addEOL();
   }
 };
@@ -35904,18 +35904,18 @@ function handleErrorResponse(parsedResponse, operationSpec, responseSpec, option
 }
 async function parse(jsonContentTypes, xmlContentTypes, operationResponse, opts, parseXML2) {
   if (!operationResponse.request.streamResponseStatusCodes?.has(operationResponse.status) && operationResponse.bodyAsText) {
-    const text = operationResponse.bodyAsText;
+    const text2 = operationResponse.bodyAsText;
     const contentType2 = operationResponse.headers.get("Content-Type") || "";
     const contentComponents = !contentType2 ? [] : contentType2.split(";").map((component) => component.toLowerCase());
     try {
       if (contentComponents.length === 0 || contentComponents.some((component) => jsonContentTypes.indexOf(component) !== -1)) {
-        operationResponse.parsedBody = JSON.parse(text);
+        operationResponse.parsedBody = JSON.parse(text2);
         return operationResponse;
       } else if (contentComponents.some((component) => xmlContentTypes.indexOf(component) !== -1)) {
         if (!parseXML2) {
           throw new Error("Parsing XML not supported.");
         }
-        const body2 = await parseXML2(text, opts.xml);
+        const body2 = await parseXML2(text2, opts.xml);
         operationResponse.parsedBody = body2;
         return operationResponse;
       }
@@ -36459,8 +36459,8 @@ var Constants = {
     AUTHORIZATION: "authorization"
   }
 };
-function isUuid(text) {
-  return /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/.test(text);
+function isUuid(text2) {
+  return /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/.test(text2);
 }
 var authorizeRequestOnTenantChallenge = async (challengeOptions) => {
   const requestOptions = requestToOptions(challengeOptions.request);
@@ -40693,7 +40693,7 @@ function prettify(node, options, matcher, readonlyMatcher) {
   return compress(node, options, matcher, readonlyMatcher);
 }
 function compress(arr, options, matcher, readonlyMatcher) {
-  let text;
+  let text2;
   const compressedObj = {};
   for (let i = 0; i < arr.length; i++) {
     const tagObj = arr[i];
@@ -40706,8 +40706,8 @@ function compress(arr, options, matcher, readonlyMatcher) {
       matcher.push(property, rawAttrs);
     }
     if (property === options.textNodeName) {
-      if (text === void 0) text = tagObj[property];
-      else text += "" + tagObj[property];
+      if (text2 === void 0) text2 = tagObj[property];
+      else text2 += "" + tagObj[property];
     } else if (property === void 0) {
       continue;
     } else if (tagObj[property]) {
@@ -40745,9 +40745,9 @@ function compress(arr, options, matcher, readonlyMatcher) {
       }
     }
   }
-  if (typeof text === "string") {
-    if (text.length > 0) compressedObj[options.textNodeName] = text;
-  } else if (text !== void 0) compressedObj[options.textNodeName] = text;
+  if (typeof text2 === "string") {
+    if (text2.length > 0) compressedObj[options.textNodeName] = text2;
+  } else if (text2 !== void 0) compressedObj[options.textNodeName] = text2;
   return compressedObj;
 }
 function propName(obj) {
@@ -40904,9 +40904,9 @@ function arrToStr(arr, options, indentation, matcher, stopNodeExpressions, xmlVe
   }
   if (!Array.isArray(arr)) {
     if (arr !== void 0 && arr !== null) {
-      let text = arr.toString();
-      text = replaceEntitiesValue2(text, options);
-      return text;
+      let text2 = arr.toString();
+      text2 = replaceEntitiesValue2(text2, options);
+      return text2;
     }
     return "";
   }
@@ -57363,8 +57363,8 @@ function extractConnectionStringParts(connectionString) {
     return { kind: "SASConnString", url: blobEndpoint, accountName, accountSas };
   }
 }
-function escape(text) {
-  return encodeURIComponent(text).replace(/%2F/g, "/").replace(/'/g, "%27").replace(/\+/g, "%20").replace(/%25/g, "%");
+function escape(text2) {
+  return encodeURIComponent(text2).replace(/%2F/g, "/").replace(/'/g, "%27").replace(/\+/g, "%20").replace(/%25/g, "%");
 }
 function appendToURLPath(url2, name) {
   const urlParsed = new URL(url2);
@@ -67011,8 +67011,8 @@ var convertMarkedBigIntsReviver = (key, value, context5, userReviver) => {
   if (typeof userReviver !== "function") return value;
   return userReviver(key, value, context5);
 };
-var JSONParseV2 = (text, reviver) => {
-  return JSON.parse(text, (key, value, context5) => {
+var JSONParseV2 = (text2, reviver) => {
+  return JSON.parse(text2, (key, value, context5) => {
     const isBigNumber = typeof value === "number" && (value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER);
     const isInt = context5 && intRegex.test(context5.source);
     const isBigInt = isBigNumber && isInt;
@@ -67025,20 +67025,20 @@ var MAX_INT = Number.MAX_SAFE_INTEGER.toString();
 var MAX_DIGITS = MAX_INT.length;
 var stringsOrLargeNumbers = /"(?:\\.|[^"])*"|-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/g;
 var noiseValueWithQuotes = /^"-?\d+n+"$/;
-var JSONParse = (text, reviver) => {
-  if (!text) return originalParse(text, reviver);
-  if (isContextSourceSupported()) return JSONParseV2(text, reviver);
-  const serializedData = text.replace(
+var JSONParse = (text2, reviver) => {
+  if (!text2) return originalParse(text2, reviver);
+  if (isContextSourceSupported()) return JSONParseV2(text2, reviver);
+  const serializedData = text2.replace(
     stringsOrLargeNumbers,
-    (text2, digits, fractional, exponential) => {
-      const isString = text2[0] === '"';
-      const isNoise = isString && noiseValueWithQuotes.test(text2);
-      if (isNoise) return text2.substring(0, text2.length - 1) + 'n"';
+    (text3, digits, fractional, exponential) => {
+      const isString = text3[0] === '"';
+      const isNoise = isString && noiseValueWithQuotes.test(text3);
+      if (isNoise) return text3.substring(0, text3.length - 1) + 'n"';
       const isFractionalOrExponential = fractional || exponential;
       const isLessThanMaxSafeInt = digits && (digits.length < MAX_DIGITS || digits.length === MAX_DIGITS && digits <= MAX_INT);
       if (isString || isFractionalOrExponential || isLessThanMaxSafeInt)
-        return text2;
-      return '"' + text2 + 'n"';
+        return text3;
+      return '"' + text3 + 'n"';
     }
   );
   return originalParse(
@@ -67207,12 +67207,12 @@ async function getResponseData(response) {
   }
   const mimetype = (0, import_content_type.parse)(contentType2);
   if (isJSONResponse(mimetype)) {
-    let text = "";
+    let text2 = "";
     try {
-      text = await response.text();
-      return JSONParse(text);
+      text2 = await response.text();
+      return JSONParse(text2);
     } catch (err) {
-      return text;
+      return text2;
     }
   } else if (mimetype.type.startsWith("text/") || mimetype.parameters.charset?.toLowerCase() === "utf-8") {
     return response.text().catch(noop);
@@ -70146,6 +70146,7 @@ var github = { ...github_exports };
 // src/index.js
 var MAX_COMMENT_ROWS = 100;
 var MAX_COMMENT_CHARS = 6e4;
+var CLI_EXIT_CONFIG_INVALID = 10;
 var EM_DASH = "\u2014";
 function escapeCell(value) {
   return String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
@@ -70237,24 +70238,70 @@ function siblingPath(dir, label) {
 function tryRename(from, to) {
   try {
     fs10.renameSync(from, to);
-    return true;
+    return null;
   } catch (err) {
     core.debug(`Could not rename ${from} to ${to}: ${err instanceof Error ? err.message : err}`);
-    return false;
+    return err && err.code || (err instanceof Error ? err.message : String(err));
+  }
+}
+var LEFTOVER_MIN_AGE_MS = 24 * 60 * 60 * 1e3;
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+async function removeLeftoverCopies(cliDir, keep, now = Date.now()) {
+  const parent = path14.dirname(cliDir);
+  const prefix2 = `${path14.basename(cliDir)}.`;
+  const pattern = /^(?:staging|stale)-(\d+)-[0-9a-f]+$/;
+  let names;
+  try {
+    names = fs10.readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix2)) continue;
+    const match2 = pattern.exec(name.slice(prefix2.length));
+    const full = path14.join(parent, name);
+    if (!match2 || full === keep) continue;
+    try {
+      if (now - fs10.statSync(full).mtimeMs < LEFTOVER_MIN_AGE_MS) continue;
+      if (processAlive(Number(match2[1]))) continue;
+      await io.rmRF(full);
+      core.debug(`Removed the leftover CLI copy ${full}.`);
+    } catch (err) {
+      core.debug(`Kept the leftover CLI copy ${full}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 }
 async function publishCli(stagingDir, cliDir, isWindows2) {
+  const exe = await publishOrKeep(stagingDir, cliDir, isWindows2);
+  await removeLeftoverCopies(cliDir, stagingDir);
+  return exe;
+}
+async function publishOrKeep(stagingDir, cliDir, isWindows2) {
+  let failure = null;
+  let blocked = false;
   for (let attempt = 0; attempt < PUBLISH_ATTEMPTS; attempt++) {
-    if (tryRename(stagingDir, cliDir)) return findExecutable(cliDir, isWindows2);
+    failure = tryRename(stagingDir, cliDir);
+    if (!failure) return findExecutable(cliDir, isWindows2);
     const winner = completeExecutable(cliDir, isWindows2);
     if (winner) {
       core.info("Another job installed this CodeCharter CLI version first; using its copy.");
       await io.rmRF(stagingDir);
       return winner;
     }
+    if (!fs10.existsSync(cliDir)) continue;
     const aside = siblingPath(cliDir, "stale");
-    if (!tryRename(cliDir, aside)) {
+    const asideFailure = tryRename(cliDir, aside);
+    if (asideFailure) {
       if (!fs10.existsSync(cliDir)) continue;
+      failure = asideFailure;
+      blocked = true;
       break;
     }
     try {
@@ -70263,8 +70310,10 @@ async function publishCli(stagingDir, cliDir, isWindows2) {
       core.debug(`Could not remove the stale CLI copy ${aside}: ${err instanceof Error ? err.message : err}`);
     }
   }
+  const cause = blocked ? `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be moved aside (${failure}), most likely because a job is still running from it.` : `This run's CodeCharter CLI copy could not be moved into the tool cache at ${cliDir} (${failure}).`;
+  const remedy = blocked ? "What to do: delete that folder once no job uses it, so later runs share one copy again." : "What to do: check that the tool cache folder is writable and not held by a virus scanner or indexer.";
   core.warning(
-    `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be replaced, most likely because a job installed by an older action version is still running from it. This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. What to do: delete that folder once no job uses it, so later runs share one copy again.`
+    `${cause} This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. ${remedy}`
   );
   return findExecutable(stagingDir, isWindows2);
 }
@@ -70316,9 +70365,9 @@ function findConfigYml(workspace) {
   }
 }
 function hasConfiguredListKey(workspace, key) {
-  const text = findConfigYml(workspace);
-  if (text === null) return false;
-  const lines = text.split(/\r?\n/);
+  const text2 = findConfigYml(workspace);
+  if (text2 === null) return false;
+  const lines = text2.split(/\r?\n/);
   const keyPattern = new RegExp(`^${key}:\\s*(.*)$`);
   for (let i = 0; i < lines.length; i++) {
     const match2 = keyPattern.exec(lines[i].replace(/#.*$/, ""));
@@ -70530,6 +70579,81 @@ function readJson(filePath) {
     return null;
   }
 }
+var MAX_REACH_DETAIL = 20;
+var MAX_REACH_DETAIL_CHARS = 300;
+var REACH_KNOWN_KEYS = /* @__PURE__ */ new Set([
+  "configured",
+  "resolved",
+  "evaluated",
+  "unresolvedSources",
+  "drift",
+  "coreLibraryUnresolvedProjects",
+  "isInconclusive",
+  "inconclusiveReasons",
+  "projectLoadFailures",
+  "workspaceLoadFailures",
+  "unevaluableRules",
+  "ruleFaults"
+]);
+var RULE_FAULT_KINDS = {
+  "item-skipped": "threw on some elements and skipped them",
+  "rule-aborted": "threw and reported nothing",
+  "engine-defect": "hit an engine defect and reported nothing"
+};
+function oneLine(value) {
+  const text2 = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text2.length > MAX_REACH_DETAIL_CHARS ? `${text2.slice(0, MAX_REACH_DETAIL_CHARS - 1)}\u2026` : text2;
+}
+function text(value) {
+  return typeof value === "string" ? value : "";
+}
+function humanizeKey(key) {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+}
+function describeEntry(entry) {
+  if (entry === null || typeof entry !== "object") return String(entry);
+  return Object.entries(entry).filter(([, v]) => v !== null && v !== void 0 && v !== "").map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ");
+}
+function faultElements(elements) {
+  if (!Array.isArray(elements)) return "";
+  const described = elements.filter((e) => e && typeof e === "object").map((e) => {
+    const name = [text(e.namespace), text(e.name)].filter(Boolean).join(".");
+    const file = text(e.filePath) ? path14.basename(e.filePath.replace(/\\/g, "/")) : "";
+    const where2 = file ? ` (${file}${Number.isFinite(e.line) ? `:${e.line}` : ""})` : "";
+    return `${[text(e.kind).toLowerCase(), name].filter(Boolean).join(" ")}${where2}`;
+  }).filter(Boolean);
+  const shown = described.slice(0, 3);
+  const more = described.length - shown.length;
+  return shown.length ? ` on ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}` : "";
+}
+function describeRuleFault(f) {
+  const kind = RULE_FAULT_KINDS[f.kind] || `faulted (${text(f.kind) || "unknown kind"})`;
+  const times = Number.isFinite(f.count) && f.count > 1 ? ` ${f.count} times` : "";
+  const types = Array.isArray(f.exceptionTypes) && f.exceptionTypes.length ? ` (${f.exceptionTypes.join(", ")})` : "";
+  const at = f.expression && Number.isFinite(f.expression.line) ? ` at rule line ${f.expression.line}${Number.isFinite(f.expression.column) ? `:${f.expression.column}` : ""}` : "";
+  const message = text(f.message) ? `: ${f.message}` : "";
+  return `Rule ${text(f.ruleId) || "unknown"} ${kind}${times}${types}${at}${faultElements(f.elements)}${message}`;
+}
+function reachDetail(reach) {
+  const list = (key) => Array.isArray(reach[key]) ? reach[key] : [];
+  const lines = [
+    ...list("projectLoadFailures").map(
+      (p) => `Project ${text(p && p.project) || "unknown"} did not load: ${text(p && p.cause) || "no cause given"}`
+    ),
+    ...list("workspaceLoadFailures").map((w) => `Workspace load failure: ${describeEntry(w)}`),
+    ...list("unevaluableRules").map(
+      (r) => `Rule ${text(r && r.ruleId) || "unknown"} could not be evaluated: ${text(r && r.reason) || "no reason given"}`
+    ),
+    ...list("ruleFaults").filter((f) => f && typeof f === "object").map(describeRuleFault)
+  ];
+  for (const [key, value] of Object.entries(reach)) {
+    if (REACH_KNOWN_KEYS.has(key) || !Array.isArray(value)) continue;
+    for (const entry of value) lines.push(`${humanizeKey(key)}: ${describeEntry(entry)}`);
+  }
+  const shown = lines.slice(0, MAX_REACH_DETAIL).map(oneLine);
+  if (lines.length > shown.length) shown.push(`\u2026and ${lines.length - shown.length} more (see the CodeCharter log)`);
+  return shown;
+}
 function reachFromReport(report) {
   const run2 = report && report.run;
   const reach = run2 && run2.reach;
@@ -70544,7 +70668,8 @@ function reachFromReport(report) {
     unresolvedSources: Array.isArray(reach.unresolvedSources) ? reach.unresolvedSources : [],
     drift: Array.isArray(reach.drift) ? reach.drift : [],
     coreLibraryUnresolvedProjects: Array.isArray(reach.coreLibraryUnresolvedProjects) ? reach.coreLibraryUnresolvedProjects : [],
-    ruleSources: Array.isArray(run2.ruleSources) ? run2.ruleSources : []
+    ruleSources: Array.isArray(run2.ruleSources) ? run2.ruleSources : [],
+    detail: reachDetail(reach)
   };
 }
 function formatRuleSources(ruleSources) {
@@ -70584,6 +70709,17 @@ function inconclusiveReasonsFromLog(output) {
   if (!/^Inconclusive run:/m.test(output || "")) return null;
   const codes = [...output.matchAll(/^\s+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
   return [...new Set(codes)];
+}
+function configErrorsFromLog(output) {
+  const seen = /* @__PURE__ */ new Set();
+  const errors = [];
+  for (const m of (output || "").matchAll(/^Config error in (.+?): (.+?)\s*$/gm)) {
+    const line = `${m[1].trim()}: ${m[2].trim()}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    errors.push({ file: m[1].trim(), error: m[2].trim() });
+  }
+  return errors;
 }
 function isUsableReport(report) {
   return report !== null && typeof report === "object" && Array.isArray(report.violations);
@@ -70685,6 +70821,7 @@ function buildComment(report, counts, workspace, opts) {
       if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${formatUnresolvedSources(reach).join(", ")}`);
       if (reach.coreLibraryUnresolvedProjects.length)
         lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(", ")}`);
+      for (const line of reach.detail) lines.push(`- ${line}`);
       lines.push("");
     } else {
       const sources = formatRuleSources(reach.ruleSources);
@@ -71655,7 +71792,8 @@ See the action README, section "Inputs".`
         const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
         const driftDetail = [
           ...formatDrift(reach.drift),
-          ...formatUnresolvedSources(reach).map((u) => `unresolved: ${u}`)
+          ...formatUnresolvedSources(reach).map((u) => `unresolved: ${u}`),
+          ...reach.detail
         ].join("; ");
         core.setFailed(
           `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}${driftDetail ? ` \u2014 ${driftDetail}` : ""}. This is independent of \`fail-on\` \u2014 the CLI could not establish that its rule sources actually resolved. What to do: check the CodeCharter log above for the specific cause (e.g. a stale \`codecharter.lock.json\` needing \`codecharter update\`, a config pin drift, or no resolvable rule source at all). See the action README, section "Rules resolution".`
@@ -71666,6 +71804,14 @@ See the action README, section "Inputs".`
         const c = tally(report);
         core.setFailed(
           `CodeCharter found ${c.error} error / ${c.warn} warning / ${c.info} info finding(s) and the \`fail-on: ${failOn}\` gate failed the build. What to do: fix the findings above, or relax \`fail-on\` (\`warn\`, \`info\`, or \`never\`) to stop them from failing the build.`
+        );
+      } else if (code === CLI_EXIT_CONFIG_INVALID) {
+        const errors = configErrorsFromLog(output);
+        const files = [...new Set(errors.map((e) => e.file))];
+        const shown = errors.slice(0, 5).map((e) => `${e.file}: ${e.error.replace(/\.$/, "")}`);
+        const more = errors.length - shown.length;
+        core.setFailed(
+          `CodeCharter rejected its configuration (exit code ${code}), so nothing was analyzed and no check, comment or SARIF was produced` + (shown.length ? `: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}. ` : ". The CLI did not name the error; see the CodeCharter log above. ") + `What to do: fix ${files.length ? files.map((f) => `\`${f}\``).join(", ") : "`.codecharter/config.yml`"} as the error says (a \`.codecharter/config.local.yml\` next to it is read too), then re-run.`
         );
       } else {
         const shown = code === null ? "null (the CodeCharter process was terminated)" : code;
@@ -71704,6 +71850,7 @@ export {
   commentMarker,
   completeExecutable,
   conclusionFor,
+  configErrorsFromLog,
   coverageBadgePayload,
   coverageConclusion,
   coverageFooterLine,
@@ -71735,8 +71882,10 @@ export {
   projectResultCell,
   publishCli,
   publishViaPortal,
+  reachDetail,
   reachFromReport,
   readJson,
+  removeLeftoverCopies,
   resolveCoverageDiffArgs,
   resolveCoverageGitRef,
   resolveDiffArgs,

@@ -663,6 +663,66 @@ test('analyze mode: a report-less inconclusive headline without reason lines say
   assert.match(failures[0], /inconclusive \(exit code 2\): no reason was reported\./);
 });
 
+test('analyze mode: an inconclusive run names the unevaluable rule and the project that did not load', async () => {
+  const payload = await analyzeRun(
+    {},
+    {
+      violations: [],
+      exitCode: 2,
+      reportExtra: {
+        run: {
+          reach: {
+            isInconclusive: true,
+            inconclusiveReasons: ['rule-unevaluable', 'project-load-failed'],
+            unevaluableRules: [{ ruleId: 'x-rule', reason: 'unknown fact m.Foo' }],
+            projectLoadFailures: [{ project: 'src/App/App.csproj', cause: 'restore missing' }],
+          },
+        },
+      },
+    }
+  );
+  assert.ok(
+    failures[0].includes(
+      'inconclusive (exit code 2): rule-unevaluable, project-load-failed — Project src/App/App.csproj did not ' +
+        'load: restore missing; Rule x-rule could not be evaluated: unknown fact m.Foo.'
+    ),
+    failures[0]
+  );
+  assert.ok(payload.summary.includes('- Rule x-rule could not be evaluated: unknown fact m.Foo'));
+});
+
+test('analyze mode: a CLI 1.7.0 config error fails naming the file and the error', async () => {
+  // Verbatim stderr of CLI 1.7.0 for a config.yml without `version`; exit code 10, no report.
+  const stderr = fs.readFileSync(path.join(FIXTURES, 'analyze-1.7.0-config-error.stderr.txt'), 'utf8');
+  const payload = await analyzeRun({}, { report: null, exitCode: 10, stderr });
+  assert.equal(payload, undefined);
+  assert.equal(failures.length, 1);
+  assert.ok(
+    failures[0].includes(
+      'rejected its configuration (exit code 10), so nothing was analyzed and no check, comment or SARIF was ' +
+        "produced: .codecharter/config.yml: config.yml(1,1): 'version' is required. Add 'version: 1' to the config file. " +
+        'What to do: fix `.codecharter/config.yml` as the error says'
+    ),
+    failures[0]
+  );
+  assert.doesNotMatch(failures[0], /without producing results/);
+});
+
+test('analyze mode: a config error the CLI does not name points at the log and config.yml', async () => {
+  await analyzeRun({}, { report: null, exitCode: 10, stderr: 'Something else went wrong.\n' });
+  assert.match(failures[0], /The CLI did not name the error; see the CodeCharter log above\./);
+  assert.match(failures[0], /fix `\.codecharter\/config\.yml`/);
+});
+
+test('analyze mode: many config errors are capped and counted', async () => {
+  const stderr = Array.from({ length: 7 }, (_, i) => `Config error in .codecharter/config.yml: problem ${i}\n`).join(
+    ''
+  );
+  await analyzeRun({}, { report: null, exitCode: 10, stderr: stderr + stderr });
+  assert.match(failures[0], /problem 4; and 2 more\./);
+  assert.doesNotMatch(failures[0], /problem 5/);
+});
+
 test('analyze mode: a crash without a report still fails as a crash', async () => {
   await analyzeRun({}, { report: null, exitCode: 1, stderr: 'Unhandled exception.\n' });
   assert.match(failures[0], /failed \(exit code 1\) without producing results/);

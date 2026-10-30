@@ -25,6 +25,12 @@ the latest release in its line.
   so the first run after upgrading downloads the CLI once more. With
   `cache: false` the CLI is downloaded into the run's temp folder and the tool
   cache is not touched.
+- Staging and moved-aside CLI copies that killed jobs left in the tool cache
+  are removed when a later run publishes the same version, but only when they
+  are older than 24 hours and the process that created them no longer runs; a
+  copy that is still in use is left alone. When a copy cannot be published,
+  the warning now names the real cause and the error code (a marker-less copy
+  that is in use, or a rename that keeps failing).
 - A run with no rule source at all no longer fails as "CodeCharter failed
   (exit code 2) without producing results", with hints about a missing .NET
   SDK or a bad `solution` path. The CLI writes no JSON report for that run, so
@@ -41,6 +47,15 @@ the latest release in its line.
 - A rule source that did not resolve now says why (CLI 1.7.0's
   `unresolvedReason`, e.g. the declared directory does not exist) in the PR
   comment, the step's inconclusive message and the reach line.
+- An inconclusive run now says which rule, project or workspace part made it
+  so, and why, in the PR comment and the step message: the projects that did
+  not load and their cause, workspace load failures, rules the engine could not
+  evaluate, and rules that threw (what threw, at which rule line, on which
+  elements). A detail array a later CLI adds is listed generically by its key
+  and fields, so nothing is dropped; long lists are capped and counted.
+- A rejected configuration (CLI exit code 10, no report) gets its own message
+  naming each `Config error in <file>: <error>` the CLI printed and the file to
+  fix, instead of the generic "failed without producing results".
 
 ## [1.11.0] - 2026-10-05
 
