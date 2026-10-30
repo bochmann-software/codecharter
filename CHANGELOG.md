@@ -7,6 +7,71 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Fixed
+
+- Several self-hosted runners sharing one tool cache no longer break each
+  other's CLI install. The action used to delete and re-extract the cached
+  version folder on every run, so a job could hit `EPERM ... unlink
+  codecharter.dll` while another job's CLI was running from it, and leave the
+  folder half-extracted for the next job ("The coverage run could not start").
+  A complete cached version (marked by a `.codecharter-complete` file written
+  last) is now reused as-is and never rewritten; a new copy is extracted into
+  a per-run staging folder next to it and moved into place with one atomic
+  rename. A job that loses that race uses the copy the other job published.
+  A folder without the marker (half-extracted, or installed in place by an
+  older action version) is never run. It is moved aside and replaced, and the
+  moved-aside copy is kept for a day before it is removed, because Linux and
+  macOS allow the move while a job still runs from it. On Windows, where the
+  move fails while the copy is in use, this run uses its own staging copy and
+  warns. The Actions
+  cache entry is now restored into a runner-local folder under `RUNNER_TEMP`,
+  so the first run after upgrading downloads the CLI once more. With
+  `cache: false` the CLI is downloaded into the run's temp folder and the tool
+  cache is not touched.
+- Staging and moved-aside CLI copies left in the tool cache are removed by a
+  later run of the same version, whether it installs or reuses that version,
+  but only once they are older than 24 hours and the process that created
+  them no longer runs; a copy that is still in use is left alone. A failed
+  install (rejected API key, network error, SHA mismatch, full disk) removes
+  its staging folder and leaves nothing in the tool cache. A publish that hits
+  a short lock (`EPERM`, `EBUSY`, `EACCES`, e.g. a virus scanner opening the
+  fresh DLLs) waits 250 ms, 1 s and 2 s between attempts. When a copy still
+  cannot be published, the warning names the real cause and the error code (a
+  marker-less copy that is in use, or a rename that keeps failing).
+- Text taken from the CLI's report or log is now escaped in the PR comment and
+  the check summary: inconclusive-run detail, unresolved sources and reasons,
+  rule-source names, file names in links, method and project names in tables.
+  Backticks, `<T>`-style generics and underscores render literally instead of
+  as code spans, swallowed HTML tags or italics, and an `@name` in that text
+  can no longer mention anyone. The reason codes of a run without a report
+  are read only from indented lines, so a CRLF log with an unindented
+  `[word]` line no longer adds a bogus code.
+- A run with no rule source at all no longer fails as "CodeCharter failed
+  (exit code 2) without producing results", with hints about a missing .NET
+  SDK or a bad `solution` path. The CLI writes no JSON report for that run, so
+  the action now reads the `Inconclusive run` lines the CLI prints and fails
+  with the `no-rule-source` reason and how to declare a rule source; the
+  `inconclusive` output is `true`.
+- Coverage mode explains a gate that failed closed because coverlet did not
+  instrument a module (CLI 1.7.0's `uninstrumentedModules`). It used to say
+  "fix the failing tests" while every test passed and the comment advised
+  covering regions; the step, the check title (`Coverage incomplete: <n>
+  module(s) not instrumented`) and a "Modules not measured" table in the
+  comment now name each module and coverlet's reason, and the footer says
+  `fail-on-threshold` does not soften it.
+- A rule source that did not resolve now says why (CLI 1.7.0's
+  `unresolvedReason`, e.g. the declared directory does not exist) in the PR
+  comment, the step's inconclusive message and the reach line.
+- An inconclusive run now says which rule, project or workspace part made it
+  so, and why, in the PR comment and the step message: the projects that did
+  not load and their cause, workspace load failures, rules the engine could not
+  evaluate, and rules that threw (what threw, at which rule line, on which
+  elements). A detail array a later CLI adds is listed generically by its key
+  and fields, so nothing is dropped; long lists are capped and counted.
+- A rejected configuration (CLI exit code 10, no report) gets its own message
+  naming each `Config error in <file>: <error>` the CLI printed and the file to
+  fix, instead of the generic "failed without producing results".
+
 ## [1.11.0] - 2026-10-05
 
 ### Added

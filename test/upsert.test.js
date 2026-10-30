@@ -128,5 +128,5 @@ test('upsertComment: API error is swallowed as a permissions warning', async () 
     rest: { issues: {} },
   });
   await assert.doesNotReject(upsertComment('TOKEN', MARKER, 'body'));
-  assert.ok(warnings.some((m) => /pull-requests: write.*Resource not accessible/s.test(m)));
+  assert.ok(warnings.some((m) => m.includes('pull-requests: write') && m.includes('Resource not accessible')));
 });

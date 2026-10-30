@@ -1,0 +1,63 @@
+{
+  "summary": {
+    "totalViolations": 1,
+    "totalTypes": 2,
+    "totalMethods": 3,
+    "durationMs": 2341
+  },
+  "run": {
+    "analysisUnit": "Sample.sln",
+    "analysisUnitKind": "solution",
+    "configPath": ".codecharter/config.yml",
+    "ruleSources": [
+      {
+        "kind": "rules-directory",
+        "identity": ".codecharter/rules",
+        "declaredIdentity": ".codecharter/rules",
+        "configuredCount": 1,
+        "resolvedCount": 1,
+        "shadowedCount": 0,
+        "isResolved": true
+      }
+    ],
+    "reach": {
+      "configured": 1,
+      "resolved": 1,
+      "evaluated": 1,
+      "unresolvedSources": [],
+      "drift": [],
+      "coreLibraryUnresolvedProjects": [],
+      "projectLoadFailures": [
+        {
+          "project": "..MissingMissing",
+          "cause": "[Failure] Projektdatei nicht gefunden: \"src/Lib/..MissingMissing.csproj\""
+        },
+        {
+          "project": "Lib",
+          "cause": "[Failure] MSBuild-Fehler beim Verarbeiten der Datei \"src/Lib/Lib.csproj\" mit der Meldung: Das referenzierte Projekt ..MissingMissing.csproj ist nicht vorhanden.."
+        }
+      ],
+      "isInconclusive": true,
+      "inconclusiveReasons": ["project-load-failed"],
+      "unevaluableRules": [],
+      "workspaceLoadFailures": [],
+      "ruleFaults": []
+    }
+  },
+  "violations": [
+    {
+      "ruleId": "static-class-non-extension",
+      "ruleName": "Static class has public non-extension methods",
+      "severity": "info",
+      "category": "Design",
+      "entityName": "Lib.Calc",
+      "entityKind": "Class",
+      "filePath": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+      "lineNumber": 4,
+      "message": "Static class has public non-extension methods: Lib.Calc",
+      "description": "Cohesion / dependency inversion: a public static class whose public methods are not extension methods is a hidden service — it couples every caller directly to the implementation with no seam for testing or substitution. Static utility behaviour that cannot be expressed as an extension method belongs behind an interface.",
+      "recommendation": "Preferred: extract the logic into an instance class, define an interface, and register it in DI (e.g. 'ISlugGenerator' / 'SlugGenerator'). If the method is a pure transform on its first argument, convert it to a true extension method by adding 'this' to that parameter. Internal static classes used only within the same assembly are exempt from this rule.",
+      "fingerprint": "b087d344a73b7f788489f22ac2c1b952"
+    }
+  ]
+}

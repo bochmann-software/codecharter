@@ -11,7 +11,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { reachFromReport, formatRuleSources, formatDrift, buildComment, tally } from '../src/index.js';
+import {
+  reachFromReport,
+  formatRuleSources,
+  formatDrift,
+  buildComment,
+  tally,
+  inconclusiveReasonsFromLog,
+  formatUnresolvedSources,
+} from '../src/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 function fixture(name) {
@@ -121,4 +129,125 @@ test('buildComment: an inconclusive run leads with its own callout, reasons and 
   const md = buildComment(report, tally(report), '/workspace', baseOpts);
   assert.match(md, /\*\*Inconclusive run\*\* — config-lock-drift\./);
   assert.match(md, /- codeguard\/csharp-all: config\.yml requests 9\.9\.9, the lock has 1\.2\.0/);
+});
+
+// ---------------------------------------------------------------------------
+// CLI 1.7.0 reports
+// ---------------------------------------------------------------------------
+
+// A real CLI 1.7.0 report: one rules directory passed with --rules over a
+// one-library sample (absolute paths rewritten to a runner workspace). 1.7.0
+// adds unevaluableRules, workspaceLoadFailures and ruleFaults to run.reach;
+// the fields the action reads keep their 1.6.4 names and types.
+const v170 = () => fixture('analyze-1.7.0-rules-dir.json');
+
+test('reachFromReport_WhenGivenARealCli170Report_ReadsReachAndRuleSources', () => {
+  const reach = reachFromReport(v170());
+  assert.equal(reach.isInconclusive, false);
+  assert.deepEqual(reach.reasons, []);
+  assert.equal(reach.configured, 126);
+  assert.equal(reach.resolved, 126);
+  assert.equal(reach.evaluated, 126);
+  assert.deepEqual(reach.unresolvedSources, []);
+  assert.deepEqual(reach.drift, []);
+  assert.equal(formatRuleSources(reach.ruleSources), '126 from rules');
+});
+
+test('tally_WhenGivenARealCli170Report_CountsItsFindings', () => {
+  assert.deepEqual(tally(v170()), { total: 4, error: 0, warn: 0, info: 4 });
+});
+
+test('buildComment_WhenGivenARealCli170Report_LinksFindingsRelativeToTheWorkspace', () => {
+  const report = v170();
+  const md = buildComment(report, tally(report), '/home/runner/work/sample/sample', {
+    severityThreshold: 'info',
+    repoFull: 'acme/app',
+    sha: 'abc',
+    failOn: 'error',
+  });
+  assert.match(md, /\[Calc\.cs:4\]\(https:\/\/github\.com\/acme\/app\/blob\/abc\/src\/Lib\/Calc\.cs#L4\)/);
+  assert.match(md, /_Reach: 126 rule\(s\) evaluated — 126 from rules\._/);
+});
+
+// ---------------------------------------------------------------------------
+// inconclusiveReasonsFromLog
+// ---------------------------------------------------------------------------
+
+// What CLI 1.7.0 prints on stderr for a run with no rule source; it writes no
+// JSON report for that run.
+const noRuleSourceLog = () =>
+  fs.readFileSync(path.join(here, 'fixtures', 'analyze-1.7.0-no-rule-source.stderr.txt'), 'utf8');
+
+test('inconclusiveReasonsFromLog_WhenTheCliReportsNoRuleSource_ReturnsItsCode', () => {
+  assert.deepEqual(inconclusiveReasonsFromLog(noRuleSourceLog()), ['no-rule-source']);
+});
+
+test('inconclusiveReasonsFromLog_WhenTheLogUsesCrlfAndRepeatsCodes_ReturnsEachCodeOnce', () => {
+  const log =
+    'Inconclusive run: 3 rules evaluated, 5 resolved.\r\n' +
+    '  [rule-faulted] a\r\n' +
+    '  [rule-faulted] b\r\n' +
+    '  [source-unresolved] c\r\n';
+  assert.deepEqual(inconclusiveReasonsFromLog(log), ['rule-faulted', 'source-unresolved']);
+});
+
+test('inconclusiveReasonsFromLog_WhenTheLogNamesNoInconclusiveRun_ReturnsNull', () => {
+  assert.equal(inconclusiveReasonsFromLog('Unhandled exception.\n  [x] not a reason\n'), null);
+  assert.equal(inconclusiveReasonsFromLog(''), null);
+  assert.equal(inconclusiveReasonsFromLog(undefined), null);
+});
+
+test('inconclusiveReasonsFromLog_WhenTheHeadlineHasNoReasonLines_ReturnsAnEmptyList', () => {
+  assert.deepEqual(inconclusiveReasonsFromLog('Inconclusive run: 0 rules evaluated, 0 resolved.\n'), []);
+});
+
+// A real CLI 1.7.0 inconclusive report: config.yml declares one rules
+// directory that resolves and one that does not exist (exit code 2).
+const unresolved170 = () => fixture('analyze-1.7.0-source-unresolved.json');
+const MISSING = ".codecharter/missing-rules (directory '.codecharter/missing-rules' does not exist)";
+
+test('reachFromReport_WhenGivenARealCli170SourceUnresolvedReport_IsInconclusive', () => {
+  const reach = reachFromReport(unresolved170());
+  assert.equal(reach.isInconclusive, true);
+  assert.deepEqual(reach.reasons, ['source-unresolved']);
+  assert.deepEqual(reach.unresolvedSources, ['.codecharter/missing-rules']);
+});
+
+test('formatRuleSources_WhenAnUnresolvedSourceGivesAReason_AppendsIt', () => {
+  assert.equal(
+    formatRuleSources(reachFromReport(unresolved170()).ruleSources),
+    "1 from .codecharter/rules, .codecharter/missing-rules (unresolved: directory '.codecharter/missing-rules' does not exist)"
+  );
+});
+
+test('formatUnresolvedSources_WhenTheRuleSourceGivesAReason_NamesIt', () => {
+  assert.deepEqual(formatUnresolvedSources(reachFromReport(unresolved170())), [MISSING]);
+});
+
+test('formatUnresolvedSources_WhenNoRuleSourceMatches_ShowsTheNameOnly', () => {
+  const reach = {
+    unresolvedSources: ['acme/rules@1.0.0'],
+    ruleSources: [{ identity: 'other', unresolvedReason: 'x' }],
+  };
+  assert.deepEqual(formatUnresolvedSources(reach), ['acme/rules@1.0.0']);
+});
+
+test('buildComment_WhenARealCli170SourceDidNotResolve_NamesTheReason', () => {
+  const report = unresolved170();
+  const md = buildComment(report, tally(report), '/home/runner/work/sample/sample', {
+    severityThreshold: 'info',
+    repoFull: 'acme/app',
+    sha: 'abc',
+    failOn: 'error',
+  });
+  assert.ok(md.includes('**Inconclusive run** — source-unresolved.'));
+  assert.ok(md.includes(`- Unresolved: ${MISSING}`));
+});
+
+test('inconclusiveReasonsFromLog_WhenACrlfLogHasAnUnindentedBracketLine_IgnoresIt', () => {
+  // The Windows CLI writes CRLF; a blank line followed by `[warn] ...` must not
+  // read as a reason code.
+  const log = fs.readFileSync(path.join(here, 'fixtures', 'analyze-no-rule-source-blank-line.crlf.txt'), 'utf8');
+  assert.ok(log.includes('\r\n\r\n[warn]'), 'the fixture keeps its CRLF line ends');
+  assert.deepEqual(inconclusiveReasonsFromLog(log), ['no-rule-source']);
 });

@@ -1,0 +1,1 @@
+Config error in .codecharter/config.yml: config.yml(1,1): 'version' is required. Add 'version: 1' to the config file.

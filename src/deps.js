@@ -25,3 +25,9 @@ export const tc = { ...tcNs };
 export const cache = { ...cacheNs };
 export const github = { ...githubNs };
 export { HttpClient };
+
+// Waiting is routed through here so tests can replace it and run without the
+// real delays (e.g. the publish backoff of the CLI install).
+export const clock = {
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};

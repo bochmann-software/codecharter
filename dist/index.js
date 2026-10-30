@@ -29183,8 +29183,8 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addRaw(text, addEOL = false) {
-    this._buffer += text;
+  addRaw(text2, addEOL = false) {
+    this._buffer += text2;
     return addEOL ? this.addEOL() : this;
   }
   /**
@@ -29280,10 +29280,10 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addHeading(text, level) {
+  addHeading(text2, level) {
     const tag = `h${level}`;
     const allowedTag = ["h1", "h2", "h3", "h4", "h5", "h6"].includes(tag) ? tag : "h1";
-    const element = this.wrap(allowedTag, text);
+    const element = this.wrap(allowedTag, text2);
     return this.addRaw(element).addEOL();
   }
   /**
@@ -29312,9 +29312,9 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addQuote(text, cite) {
+  addQuote(text2, cite) {
     const attrs = Object.assign({}, cite && { cite });
-    const element = this.wrap("blockquote", text, attrs);
+    const element = this.wrap("blockquote", text2, attrs);
     return this.addRaw(element).addEOL();
   }
   /**
@@ -29325,8 +29325,8 @@ var Summary = class {
    *
    * @returns {Summary} summary instance
    */
-  addLink(text, href) {
-    const element = this.wrap("a", text, { href });
+  addLink(text2, href) {
+    const element = this.wrap("a", text2, { href });
     return this.addRaw(element).addEOL();
   }
 };
@@ -35904,18 +35904,18 @@ function handleErrorResponse(parsedResponse, operationSpec, responseSpec, option
 }
 async function parse(jsonContentTypes, xmlContentTypes, operationResponse, opts, parseXML2) {
   if (!operationResponse.request.streamResponseStatusCodes?.has(operationResponse.status) && operationResponse.bodyAsText) {
-    const text = operationResponse.bodyAsText;
+    const text2 = operationResponse.bodyAsText;
     const contentType2 = operationResponse.headers.get("Content-Type") || "";
     const contentComponents = !contentType2 ? [] : contentType2.split(";").map((component) => component.toLowerCase());
     try {
       if (contentComponents.length === 0 || contentComponents.some((component) => jsonContentTypes.indexOf(component) !== -1)) {
-        operationResponse.parsedBody = JSON.parse(text);
+        operationResponse.parsedBody = JSON.parse(text2);
         return operationResponse;
       } else if (contentComponents.some((component) => xmlContentTypes.indexOf(component) !== -1)) {
         if (!parseXML2) {
           throw new Error("Parsing XML not supported.");
         }
-        const body2 = await parseXML2(text, opts.xml);
+        const body2 = await parseXML2(text2, opts.xml);
         operationResponse.parsedBody = body2;
         return operationResponse;
       }
@@ -36459,8 +36459,8 @@ var Constants = {
     AUTHORIZATION: "authorization"
   }
 };
-function isUuid(text) {
-  return /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/.test(text);
+function isUuid(text2) {
+  return /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/.test(text2);
 }
 var authorizeRequestOnTenantChallenge = async (challengeOptions) => {
   const requestOptions = requestToOptions(challengeOptions.request);
@@ -40693,7 +40693,7 @@ function prettify(node, options, matcher, readonlyMatcher) {
   return compress(node, options, matcher, readonlyMatcher);
 }
 function compress(arr, options, matcher, readonlyMatcher) {
-  let text;
+  let text2;
   const compressedObj = {};
   for (let i = 0; i < arr.length; i++) {
     const tagObj = arr[i];
@@ -40706,8 +40706,8 @@ function compress(arr, options, matcher, readonlyMatcher) {
       matcher.push(property, rawAttrs);
     }
     if (property === options.textNodeName) {
-      if (text === void 0) text = tagObj[property];
-      else text += "" + tagObj[property];
+      if (text2 === void 0) text2 = tagObj[property];
+      else text2 += "" + tagObj[property];
     } else if (property === void 0) {
       continue;
     } else if (tagObj[property]) {
@@ -40745,9 +40745,9 @@ function compress(arr, options, matcher, readonlyMatcher) {
       }
     }
   }
-  if (typeof text === "string") {
-    if (text.length > 0) compressedObj[options.textNodeName] = text;
-  } else if (text !== void 0) compressedObj[options.textNodeName] = text;
+  if (typeof text2 === "string") {
+    if (text2.length > 0) compressedObj[options.textNodeName] = text2;
+  } else if (text2 !== void 0) compressedObj[options.textNodeName] = text2;
   return compressedObj;
 }
 function propName(obj) {
@@ -40904,9 +40904,9 @@ function arrToStr(arr, options, indentation, matcher, stopNodeExpressions, xmlVe
   }
   if (!Array.isArray(arr)) {
     if (arr !== void 0 && arr !== null) {
-      let text = arr.toString();
-      text = replaceEntitiesValue2(text, options);
-      return text;
+      let text2 = arr.toString();
+      text2 = replaceEntitiesValue2(text2, options);
+      return text2;
     }
     return "";
   }
@@ -57363,8 +57363,8 @@ function extractConnectionStringParts(connectionString) {
     return { kind: "SASConnString", url: blobEndpoint, accountName, accountSas };
   }
 }
-function escape(text) {
-  return encodeURIComponent(text).replace(/%2F/g, "/").replace(/'/g, "%27").replace(/\+/g, "%20").replace(/%25/g, "%");
+function escape(text2) {
+  return encodeURIComponent(text2).replace(/%2F/g, "/").replace(/'/g, "%27").replace(/\+/g, "%20").replace(/%25/g, "%");
 }
 function appendToURLPath(url2, name) {
   const urlParsed = new URL(url2);
@@ -67011,8 +67011,8 @@ var convertMarkedBigIntsReviver = (key, value, context5, userReviver) => {
   if (typeof userReviver !== "function") return value;
   return userReviver(key, value, context5);
 };
-var JSONParseV2 = (text, reviver) => {
-  return JSON.parse(text, (key, value, context5) => {
+var JSONParseV2 = (text2, reviver) => {
+  return JSON.parse(text2, (key, value, context5) => {
     const isBigNumber = typeof value === "number" && (value > Number.MAX_SAFE_INTEGER || value < Number.MIN_SAFE_INTEGER);
     const isInt = context5 && intRegex.test(context5.source);
     const isBigInt = isBigNumber && isInt;
@@ -67025,20 +67025,20 @@ var MAX_INT = Number.MAX_SAFE_INTEGER.toString();
 var MAX_DIGITS = MAX_INT.length;
 var stringsOrLargeNumbers = /"(?:\\.|[^"])*"|-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/g;
 var noiseValueWithQuotes = /^"-?\d+n+"$/;
-var JSONParse = (text, reviver) => {
-  if (!text) return originalParse(text, reviver);
-  if (isContextSourceSupported()) return JSONParseV2(text, reviver);
-  const serializedData = text.replace(
+var JSONParse = (text2, reviver) => {
+  if (!text2) return originalParse(text2, reviver);
+  if (isContextSourceSupported()) return JSONParseV2(text2, reviver);
+  const serializedData = text2.replace(
     stringsOrLargeNumbers,
-    (text2, digits, fractional, exponential) => {
-      const isString = text2[0] === '"';
-      const isNoise = isString && noiseValueWithQuotes.test(text2);
-      if (isNoise) return text2.substring(0, text2.length - 1) + 'n"';
+    (text3, digits, fractional, exponential) => {
+      const isString = text3[0] === '"';
+      const isNoise = isString && noiseValueWithQuotes.test(text3);
+      if (isNoise) return text3.substring(0, text3.length - 1) + 'n"';
       const isFractionalOrExponential = fractional || exponential;
       const isLessThanMaxSafeInt = digits && (digits.length < MAX_DIGITS || digits.length === MAX_DIGITS && digits <= MAX_INT);
       if (isString || isFractionalOrExponential || isLessThanMaxSafeInt)
-        return text2;
-      return '"' + text2 + 'n"';
+        return text3;
+      return '"' + text3 + 'n"';
     }
   );
   return originalParse(
@@ -67207,12 +67207,12 @@ async function getResponseData(response) {
   }
   const mimetype = (0, import_content_type.parse)(contentType2);
   if (isJSONResponse(mimetype)) {
-    let text = "";
+    let text2 = "";
     try {
-      text = await response.text();
-      return JSONParse(text);
+      text2 = await response.text();
+      return JSONParse(text2);
     } catch (err) {
-      return text;
+      return text2;
     }
   } else if (mimetype.type.startsWith("text/") || mimetype.parameters.charset?.toLowerCase() === "utf-8") {
     return response.text().catch(noop);
@@ -70142,13 +70142,20 @@ var io = { ...io_exports };
 var tc = { ...tool_cache_exports };
 var cache = { ...cache_exports };
 var github = { ...github_exports };
+var clock = {
+  sleep: (ms) => new Promise((resolve2) => setTimeout(resolve2, ms))
+};
 
 // src/index.js
 var MAX_COMMENT_ROWS = 100;
 var MAX_COMMENT_CHARS = 6e4;
+var CLI_EXIT_CONFIG_INVALID = 10;
 var EM_DASH = "\u2014";
 function escapeCell(value) {
-  return String(value ?? "").replace(/[\r\n]+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+  return escapeInline(value);
+}
+function escapeInline(value) {
+  return String(value ?? "").replace(/[\r\n]+/g, " ").replace(/[\\`*_[\]<>#|~&]/g, "\\$&").replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9])/g, "$1@\u200B");
 }
 function commentMarker(discriminator) {
   const tag = crypto5.createHash("sha1").update(discriminator || "default").digest("hex").slice(0, 12);
@@ -70225,6 +70232,105 @@ function findExecutable(root, isWindows2) {
   }
   return null;
 }
+var CLI_COMPLETE_MARKER = ".codecharter-complete";
+var PUBLISH_BACKOFF_MS = [250, 1e3, 2e3];
+var TRANSIENT_RENAME_ERRORS = /* @__PURE__ */ new Set(["EPERM", "EBUSY", "EACCES"]);
+function touchFolder(dir) {
+  try {
+    const now = /* @__PURE__ */ new Date();
+    fs10.utimesSync(dir, now, now);
+  } catch (err) {
+    core.debug(`Could not touch ${dir}: ${err instanceof Error ? err.message : err}`);
+  }
+}
+function completeExecutable(dir, isWindows2) {
+  if (!fs10.existsSync(path14.join(dir, CLI_COMPLETE_MARKER))) return null;
+  return findExecutable(dir, isWindows2);
+}
+function siblingPath(dir, label) {
+  return `${dir}.${label}-${process.pid}-${crypto5.randomBytes(4).toString("hex")}`;
+}
+function tryRename(from, to) {
+  try {
+    fs10.renameSync(from, to);
+    return null;
+  } catch (err) {
+    core.debug(`Could not rename ${from} to ${to}: ${err instanceof Error ? err.message : err}`);
+    return err && err.code || (err instanceof Error ? err.message : String(err));
+  }
+}
+var LEFTOVER_MIN_AGE_MS = 24 * 60 * 60 * 1e3;
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+async function removeLeftoverCopies(cliDir, keep, now = Date.now()) {
+  const parent = path14.dirname(cliDir);
+  const prefix2 = `${path14.basename(cliDir)}.`;
+  const pattern = /^(?:staging|stale)-(\d+)-[0-9a-f]+$/;
+  let names;
+  try {
+    names = fs10.readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix2)) continue;
+    const match2 = pattern.exec(name.slice(prefix2.length));
+    const full = path14.join(parent, name);
+    if (!match2 || full === keep) continue;
+    try {
+      if (now - fs10.statSync(full).mtimeMs < LEFTOVER_MIN_AGE_MS) continue;
+      if (processAlive(Number(match2[1]))) continue;
+      await io.rmRF(full);
+      core.debug(`Removed the leftover CLI copy ${full}.`);
+    } catch (err) {
+      core.debug(`Kept the leftover CLI copy ${full}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+}
+async function publishCli(stagingDir, cliDir, isWindows2) {
+  const exe = await publishOrKeep(stagingDir, cliDir, isWindows2);
+  await removeLeftoverCopies(cliDir, stagingDir);
+  return exe;
+}
+async function publishOrKeep(stagingDir, cliDir, isWindows2) {
+  let failure;
+  let blocked = false;
+  for (let attempt = 0; ; attempt++) {
+    failure = tryRename(stagingDir, cliDir);
+    if (!failure) return findExecutable(cliDir, isWindows2);
+    const winner = completeExecutable(cliDir, isWindows2);
+    if (winner) {
+      core.info("Another job installed this CodeCharter CLI version first; using its copy.");
+      await io.rmRF(stagingDir);
+      return winner;
+    }
+    const inTheWay = fs10.existsSync(cliDir);
+    if (inTheWay) {
+      const aside = siblingPath(cliDir, "stale");
+      const asideFailure = tryRename(cliDir, aside);
+      if (asideFailure && fs10.existsSync(cliDir)) {
+        failure = asideFailure;
+        blocked = true;
+        break;
+      }
+      if (!asideFailure) touchFolder(aside);
+    }
+    if (attempt >= PUBLISH_BACKOFF_MS.length) break;
+    if (!inTheWay && TRANSIENT_RENAME_ERRORS.has(failure)) await clock.sleep(PUBLISH_BACKOFF_MS[attempt]);
+  }
+  const cause = blocked ? `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be moved aside (${failure}), most likely because a job is still running from it.` : `This run's CodeCharter CLI copy could not be moved into the tool cache at ${cliDir} (${failure}).`;
+  const remedy = blocked ? "What to do: delete that folder once no job uses it, so later runs share one copy again." : "What to do: check that the tool cache folder is writable and not held by a virus scanner or indexer.";
+  core.warning(
+    `${cause} This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. ${remedy}`
+  );
+  return findExecutable(stagingDir, isWindows2);
+}
 function discoverSolutions(workspace) {
   const skip = /* @__PURE__ */ new Set(["node_modules", "bin", "obj", ".git"]);
   const solutions = [];
@@ -70273,9 +70379,9 @@ function findConfigYml(workspace) {
   }
 }
 function hasConfiguredListKey(workspace, key) {
-  const text = findConfigYml(workspace);
-  if (text === null) return false;
-  const lines = text.split(/\r?\n/);
+  const text2 = findConfigYml(workspace);
+  if (text2 === null) return false;
+  const lines = text2.split(/\r?\n/);
   const keyPattern = new RegExp(`^${key}:\\s*(.*)$`);
   for (let i = 0; i < lines.length; i++) {
     const match2 = keyPattern.exec(lines[i].replace(/#.*$/, ""));
@@ -70487,6 +70593,81 @@ function readJson(filePath) {
     return null;
   }
 }
+var MAX_REACH_DETAIL = 20;
+var MAX_REACH_DETAIL_CHARS = 300;
+var REACH_KNOWN_KEYS = /* @__PURE__ */ new Set([
+  "configured",
+  "resolved",
+  "evaluated",
+  "unresolvedSources",
+  "drift",
+  "coreLibraryUnresolvedProjects",
+  "isInconclusive",
+  "inconclusiveReasons",
+  "projectLoadFailures",
+  "workspaceLoadFailures",
+  "unevaluableRules",
+  "ruleFaults"
+]);
+var RULE_FAULT_KINDS = {
+  "item-skipped": "threw on some elements and skipped them",
+  "rule-aborted": "threw and reported nothing",
+  "engine-defect": "hit an engine defect and reported nothing"
+};
+function oneLine(value) {
+  const text2 = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text2.length > MAX_REACH_DETAIL_CHARS ? `${text2.slice(0, MAX_REACH_DETAIL_CHARS - 1)}\u2026` : text2;
+}
+function text(value) {
+  return typeof value === "string" ? value : "";
+}
+function humanizeKey(key) {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+}
+function describeEntry(entry) {
+  if (entry === null || typeof entry !== "object") return String(entry);
+  return Object.entries(entry).filter(([, v]) => v !== null && v !== void 0 && v !== "").map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ");
+}
+function faultElements(elements) {
+  if (!Array.isArray(elements)) return "";
+  const described = elements.filter((e) => e && typeof e === "object").map((e) => {
+    const name = [text(e.namespace), text(e.name)].filter(Boolean).join(".");
+    const file = text(e.filePath) ? path14.basename(e.filePath.replace(/\\/g, "/")) : "";
+    const where2 = file ? ` (${file}${Number.isFinite(e.line) ? `:${e.line}` : ""})` : "";
+    return `${[text(e.kind).toLowerCase(), name].filter(Boolean).join(" ")}${where2}`;
+  }).filter(Boolean);
+  const shown = described.slice(0, 3);
+  const more = described.length - shown.length;
+  return shown.length ? ` on ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}` : "";
+}
+function describeRuleFault(f) {
+  const kind = RULE_FAULT_KINDS[f.kind] || `faulted (${text(f.kind) || "unknown kind"})`;
+  const times = Number.isFinite(f.count) && f.count > 1 ? ` ${f.count} times` : "";
+  const types = Array.isArray(f.exceptionTypes) && f.exceptionTypes.length ? ` (${f.exceptionTypes.join(", ")})` : "";
+  const at = f.expression && Number.isFinite(f.expression.line) ? ` at rule line ${f.expression.line}${Number.isFinite(f.expression.column) ? `:${f.expression.column}` : ""}` : "";
+  const message = text(f.message) ? `: ${f.message}` : "";
+  return `Rule ${text(f.ruleId) || "unknown"} ${kind}${times}${types}${at}${faultElements(f.elements)}${message}`;
+}
+function reachDetail(reach) {
+  const list = (key) => Array.isArray(reach[key]) ? reach[key] : [];
+  const lines = [
+    ...list("projectLoadFailures").map(
+      (p) => `Project ${text(p && p.project) || "unknown"} did not load: ${text(p && p.cause) || "no cause given"}`
+    ),
+    ...list("workspaceLoadFailures").map((w) => `Workspace load failure: ${describeEntry(w)}`),
+    ...list("unevaluableRules").map(
+      (r) => `Rule ${text(r && r.ruleId) || "unknown"} could not be evaluated: ${text(r && r.reason) || "no reason given"}`
+    ),
+    ...list("ruleFaults").filter((f) => f && typeof f === "object").map(describeRuleFault)
+  ];
+  for (const [key, value] of Object.entries(reach)) {
+    if (REACH_KNOWN_KEYS.has(key) || !Array.isArray(value)) continue;
+    for (const entry of value) lines.push(`${humanizeKey(key)}: ${describeEntry(entry)}`);
+  }
+  const shown = lines.slice(0, MAX_REACH_DETAIL).map(oneLine);
+  if (lines.length > shown.length) shown.push(`\u2026and ${lines.length - shown.length} more (see the CodeCharter log)`);
+  return shown;
+}
 function reachFromReport(report) {
   const run2 = report && report.run;
   const reach = run2 && run2.reach;
@@ -70501,17 +70682,32 @@ function reachFromReport(report) {
     unresolvedSources: Array.isArray(reach.unresolvedSources) ? reach.unresolvedSources : [],
     drift: Array.isArray(reach.drift) ? reach.drift : [],
     coreLibraryUnresolvedProjects: Array.isArray(reach.coreLibraryUnresolvedProjects) ? reach.coreLibraryUnresolvedProjects : [],
-    ruleSources: Array.isArray(run2.ruleSources) ? run2.ruleSources : []
+    ruleSources: Array.isArray(run2.ruleSources) ? run2.ruleSources : [],
+    detail: reachDetail(reach)
   };
 }
 function formatRuleSources(ruleSources) {
   if (!ruleSources || ruleSources.length === 0) return "";
   return ruleSources.map((s) => {
     const identity = s.identity || s.declaredIdentity || "unknown source";
-    if (s.isResolved === false) return `${identity} (unresolved)`;
+    if (s.isResolved === false) {
+      const reason = unresolvedReason(s);
+      return `${identity} (unresolved${reason ? `: ${reason}` : ""})`;
+    }
     const count = typeof s.resolvedCount === "number" ? s.resolvedCount : 0;
     return `${count} from ${identity}`;
   }).join(", ");
+}
+function unresolvedReason(source) {
+  const reason = source && typeof source.unresolvedReason === "string" ? source.unresolvedReason.trim() : "";
+  return reason.replace(/\.$/, "");
+}
+function formatUnresolvedSources(reach) {
+  return reach.unresolvedSources.map((name) => {
+    const source = reach.ruleSources.find((s) => s && (s.identity === name || s.declaredIdentity === name));
+    const reason = unresolvedReason(source);
+    return reason ? `${name} (${reason})` : name;
+  });
 }
 function formatDrift(drift) {
   if (!drift || drift.length === 0) return [];
@@ -70522,6 +70718,30 @@ function formatDrift(drift) {
     const rest = Object.entries(d).filter(([k]) => k !== "kind").map(([k, v]) => `${k}: ${v}`).join(", ");
     return `${d.kind || "drift"}${rest ? ` (${rest})` : ""}`;
   });
+}
+function inconclusiveReasonsFromLog(output) {
+  if (!/^Inconclusive run:/m.test(output || "")) return null;
+  const codes = [...output.matchAll(/^[ \t]+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
+  return [...new Set(codes)];
+}
+var CONFIG_ERROR_PREFIX = "Config error in ";
+function configErrorsFromLog(output) {
+  const seen = /* @__PURE__ */ new Set();
+  const errors = [];
+  for (const raw of (output || "").split("\n")) {
+    if (!raw.startsWith(CONFIG_ERROR_PREFIX)) continue;
+    const rest = raw.slice(CONFIG_ERROR_PREFIX.length);
+    const separator = rest.indexOf(": ", 1);
+    if (separator < 0) continue;
+    const file = rest.slice(0, separator).trim();
+    const error2 = rest.slice(separator + 2).trim();
+    if (!file || !error2) continue;
+    const line = `${file}: ${error2}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    errors.push({ file, error: error2 });
+  }
+  return errors;
 }
 function isUsableReport(report) {
   return report !== null && typeof report === "object" && Array.isArray(report.violations);
@@ -70572,7 +70792,7 @@ function severityBadge(severity) {
 function locationLink(violation, workspace, repoFull, sha) {
   const rel = displayPath(violation.filePath, workspace);
   if (!rel) return "-";
-  const name = rel.split("/").pop();
+  const name = escapeInline(rel.split("/").pop());
   if (violation.lineNumber) {
     return `[${name}:${violation.lineNumber}](https://github.com/${repoFull}/blob/${sha}/${rel}#L${violation.lineNumber})`;
   }
@@ -70617,15 +70837,19 @@ function buildComment(report, counts, workspace, opts) {
   const reach = reachFromReport(report);
   if (reach) {
     if (reach.isInconclusive) {
-      const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
+      const reasons = reach.reasons.length ? reach.reasons.map(escapeInline).join(", ") : "no reason was reported";
       lines.push(`**Inconclusive run** \u2014 ${reasons}.`, "");
-      for (const line of formatDrift(reach.drift)) lines.push(`- ${line}`);
-      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${reach.unresolvedSources.join(", ")}`);
+      for (const line of formatDrift(reach.drift)) lines.push(`- ${escapeInline(line)}`);
+      if (reach.unresolvedSources.length)
+        lines.push(`- Unresolved: ${formatUnresolvedSources(reach).map(escapeInline).join(", ")}`);
       if (reach.coreLibraryUnresolvedProjects.length)
-        lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(", ")}`);
+        lines.push(
+          `- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.map(escapeInline).join(", ")}`
+        );
+      for (const line of reach.detail) lines.push(`- ${escapeInline(line)}`);
       lines.push("");
     } else {
-      const sources = formatRuleSources(reach.ruleSources);
+      const sources = escapeInline(formatRuleSources(reach.ruleSources));
       const parts = [];
       if (reach.evaluated !== void 0) parts.push(`${reach.evaluated} rule(s) evaluated`);
       if (reach.resolved !== void 0 && reach.resolved !== reach.evaluated) parts.push(`${reach.resolved} resolved`);
@@ -70714,8 +70938,36 @@ function coverageSummary(report) {
     // Summed once here so the comment and the badge payload read the same
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
-    diff
+    diff,
+    uninstrumented: uninstrumentedModules(report)
   };
+}
+function uninstrumentedModules(report) {
+  const modules = report && report.uninstrumentedModules;
+  if (!Array.isArray(modules)) return [];
+  return modules.filter((m) => m && typeof m === "object" && typeof m.module === "string").map((m) => ({
+    module: m.module,
+    projectFile: typeof m.projectFile === "string" ? m.projectFile : "",
+    reason: typeof m.reason === "string" ? m.reason : ""
+  }));
+}
+function uninstrumentedLines(summary2, workspace) {
+  const modules = summary2.uninstrumented;
+  if (modules.length === 0) return [];
+  const lines = [
+    `### Modules not measured (${modules.length})`,
+    "",
+    "Coverlet did not instrument these modules, so none of their lines reached the gate and it failed closed.",
+    "",
+    "| Module | Project | Reason |",
+    "|--------|---------|--------|"
+  ];
+  for (const m of modules) {
+    const project = displayPath(m.projectFile, workspace) || EM_DASH;
+    lines.push(`| ${escapeCell(m.module)} | ${escapeCell(project)} | ${escapeCell(m.reason || EM_DASH)} |`);
+  }
+  lines.push("");
+  return lines;
 }
 function meetsThreshold(covered, total, required) {
   if (total === 0) return true;
@@ -70843,7 +71095,11 @@ function buildCoverageComment(summary2, workspace, opts) {
       "_No coverage data was produced, so the gate could not be evaluated._"
     ].join("\n");
   }
-  const head = [...coverageHeadLines(summary2, heading), ...diffCoverageLines(summary2.diff, workspace, opts)];
+  const head = [
+    ...coverageHeadLines(summary2, heading),
+    ...uninstrumentedLines(summary2, workspace),
+    ...diffCoverageLines(summary2.diff, workspace, opts)
+  ];
   const tail = coverageRegionLines(summary2, workspace, opts);
   let markdown = "";
   for (const mode of TEST_TABLE_MODES) {
@@ -70910,7 +71166,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
     if (truncated) break;
     lines.push(
       "<details>",
-      `<summary>${file} (${regions.length} ${label})</summary>`,
+      `<summary>${escapeInline(file)} (${regions.length} ${label})</summary>`,
       "",
       "| Lines | Method | Location |",
       "|-------|--------|----------|"
@@ -70925,7 +71181,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
       const last = numbers[numbers.length - 1];
       const span = numbers.length > 1 ? `${first}-${last}` : `${first ?? "?"}`;
       const method = escapeCell(region.method);
-      const link = repoFull && sha && first ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})` : `${file}:${first ?? "?"}`;
+      const link = repoFull && sha && first ? `[${escapeInline(file)}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})` : `${escapeInline(file)}:${first ?? "?"}`;
       lines.push(`| ${span} | ${method} | ${link} |`);
       rendered++;
     }
@@ -70946,6 +71202,9 @@ function coverageRegionLines(summary2, workspace, opts) {
   return lines;
 }
 function coverageFooterLine(summary2, failOnThreshold) {
+  if (summary2.uninstrumented.length > 0) {
+    return "_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._";
+  }
   const diff = summary2.diff;
   if (diff) {
     if (diff.met) {
@@ -70968,6 +71227,9 @@ function coverageConclusion(exitCode, failOnThreshold) {
   return "failure";
 }
 function coverageTitle(exitCode, summary2) {
+  if (exitCode === 2 && summary2.uninstrumented.length > 0) {
+    return `Coverage incomplete: ${summary2.uninstrumented.length} module(s) not instrumented`;
+  }
   if (exitCode === 2) return "Tests failed or coverage was incomplete";
   if (exitCode === 3) return "No coverage data";
   if (exitCode === 64) return "Coverage could not run (usage, config, or environment error)";
@@ -71094,6 +71356,14 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
   }
   const cliDir = path14.join(cacheBase, "codecharter-cli", platform3, keyVersion);
   const cacheKey = `codecharter-cli-${platform3}-${keyVersion}`;
+  if (cacheEnabled) {
+    const installed = completeExecutable(cliDir, isWindows2);
+    if (installed) {
+      core.info(`Using the CodeCharter CLI from the tool cache (${platform3}, ${keyVersion}).`);
+      await removeLeftoverCopies(cliDir, null);
+      return installed;
+    }
+  }
   let canCache = cacheEnabled && cache.isFeatureAvailable();
   if (cacheEnabled && !canCache) {
     core.debug("Actions cache service is not available; downloading without cache.");
@@ -71107,39 +71377,64 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
       );
     }
   }
-  await io.rmRF(cliDir);
-  await io.mkdirP(cliDir);
+  const installDir = cacheEnabled ? siblingPath(cliDir, "staging") : path14.join(tmp, "cli");
+  const transitDir = path14.join(process.env.RUNNER_TEMP || tmp, "codecharter-cli", platform3, keyVersion);
+  let fromCache = false;
   if (canCache) {
+    await io.rmRF(transitDir);
+    await io.mkdirP(transitDir);
     try {
-      if (await cache.restoreCache([cliDir], cacheKey)) {
-        const cached = findExecutable(cliDir, isWindows2);
-        if (cached) {
-          if (!isWindows2) fs10.chmodSync(cached, 493);
-          core.info(`Using cached CodeCharter CLI (${platform3}, ${keyVersion}).`);
-          return cached;
-        }
+      if (await cache.restoreCache([transitDir], cacheKey) && findExecutable(transitDir, isWindows2)) {
+        fromCache = true;
+        core.info(`Using cached CodeCharter CLI (${platform3}, ${keyVersion}).`);
       }
     } catch (err) {
       core.debug(`Cache restore skipped: ${err instanceof Error ? err.message : err}`);
     }
   }
-  core.info(`Downloading CodeCharter CLI (${platform3}, ${downloadVersion}) from ${portal}`);
-  const url2 = `${portal}/api/v1/cli/${platform3}/${downloadVersion}`;
-  const { archive, expectedSha } = await downloadArchive(url2, apiKey, tmp, isWindows2);
-  await verifySha(archive, manifestSha || expectedSha);
-  if (isWindows2) {
-    await tc.extractZip(archive, cliDir);
-  } else {
-    await tc.extractTar(archive, cliDir);
+  let archive = null;
+  if (!fromCache) {
+    core.info(`Downloading CodeCharter CLI (${platform3}, ${downloadVersion}) from ${portal}`);
+    const url2 = `${portal}/api/v1/cli/${platform3}/${downloadVersion}`;
+    const downloaded = await downloadArchive(url2, apiKey, tmp, isWindows2);
+    await verifySha(downloaded.archive, manifestSha || downloaded.expectedSha);
+    archive = downloaded.archive;
   }
-  const exe = findExecutable(cliDir, isWindows2);
-  if (!exe) {
-    throw new Error("Extracted archive does not contain a codecharter executable.");
+  let staged;
+  try {
+    await io.mkdirP(installDir);
+    if (archive) {
+      const extractDir = canCache ? transitDir : installDir;
+      if (canCache) {
+        await io.rmRF(transitDir);
+        await io.mkdirP(transitDir);
+      }
+      if (isWindows2) {
+        await tc.extractZip(archive, extractDir);
+      } else {
+        await tc.extractTar(archive, extractDir);
+      }
+      if (!findExecutable(extractDir, isWindows2)) {
+        throw new Error("Extracted archive does not contain a codecharter executable.");
+      }
+    }
+    if (canCache) fs10.cpSync(transitDir, installDir, { recursive: true });
+    staged = findExecutable(installDir, isWindows2);
+    if (!isWindows2) fs10.chmodSync(staged, 493);
+    if (cacheEnabled) {
+      fs10.writeFileSync(
+        path14.join(installDir, CLI_COMPLETE_MARKER),
+        JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: (/* @__PURE__ */ new Date()).toISOString() })
+      );
+    }
+  } catch (err) {
+    await io.rmRF(installDir);
+    throw err;
   }
-  if (!isWindows2) fs10.chmodSync(exe, 493);
-  if (canCache) {
+  const exe = cacheEnabled ? await publishCli(installDir, cliDir, isWindows2) : staged;
+  if (canCache && !fromCache) {
     try {
-      await cache.saveCache([cliDir], cacheKey);
+      await cache.saveCache([transitDir], cacheKey);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/reserve|already exists|already been/i.test(msg)) {
@@ -71239,6 +71534,13 @@ async function runCoverage(ctx) {
     } else {
       core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
     }
+    return;
+  }
+  if (code === 2 && summary2.uninstrumented.length > 0) {
+    const names = summary2.uninstrumented.map((m) => m.reason ? `${m.module} (${m.reason})` : m.module).join("; ");
+    core.setFailed(
+      `The coverage gate failed closed: coverlet did not instrument ${summary2.uninstrumented.length} module(s) the run expected to measure, so their lines never reached the gate: ${names}. What to do: make sure each module's PDB sits next to it and its source paths exist on the runner (deterministic builds), then re-run; see \`uninstrumentedModules\` in the coverage report.`
+    );
     return;
   }
   if (code === 2) {
@@ -71489,6 +71791,8 @@ async function run() {
         await upsertComment(githubToken, commentMarker(discriminator), markdown);
       }
     }
+    const logReasons = report ? null : inconclusiveReasonsFromLog(output);
+    if (logReasons) core.setOutput("inconclusive", "true");
     if (code !== 0 || inconclusive || !report) {
       if (/Path to dotnet executable is not set|Microsoft\.Build\.Locator|MSBuildLocator/i.test(output)) {
         core.error(
@@ -71509,9 +71813,18 @@ See the action README, section "Requirements".`
 See the action README, section "Inputs".`
         );
       }
-      if (inconclusive) {
+      if (logReasons) {
+        const noSource = logReasons.includes("no-rule-source");
+        core.setFailed(
+          `CodeCharter's run was inconclusive (exit code ${code}): ${logReasons.length ? logReasons.join(", ") : "no reason was reported"}. The CLI wrote no report, so no check, comment or SARIF was produced. ` + (noSource ? "No rule source resolved, so nothing was checked. What to do: declare a `profiles:` or `rules:` entry in `.codecharter/config.yml`, or set the `rules` input." : "What to do: check the CodeCharter log above for the specific cause.") + ' See the action README, section "Rules resolution".'
+        );
+      } else if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
-        const driftDetail = formatDrift(reach.drift).join("; ");
+        const driftDetail = [
+          ...formatDrift(reach.drift),
+          ...formatUnresolvedSources(reach).map((u) => `unresolved: ${u}`),
+          ...reach.detail
+        ].join("; ");
         core.setFailed(
           `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}${driftDetail ? ` \u2014 ${driftDetail}` : ""}. This is independent of \`fail-on\` \u2014 the CLI could not establish that its rule sources actually resolved. What to do: check the CodeCharter log above for the specific cause (e.g. a stale \`codecharter.lock.json\` needing \`codecharter update\`, a config pin drift, or no resolvable rule source at all). See the action README, section "Rules resolution".`
         );
@@ -71521,6 +71834,14 @@ See the action README, section "Inputs".`
         const c = tally(report);
         core.setFailed(
           `CodeCharter found ${c.error} error / ${c.warn} warning / ${c.info} info finding(s) and the \`fail-on: ${failOn}\` gate failed the build. What to do: fix the findings above, or relax \`fail-on\` (\`warn\`, \`info\`, or \`never\`) to stop them from failing the build.`
+        );
+      } else if (code === CLI_EXIT_CONFIG_INVALID) {
+        const errors = configErrorsFromLog(output);
+        const files = [...new Set(errors.map((e) => e.file))];
+        const shown = errors.slice(0, 5).map((e) => `${e.file}: ${e.error.replace(/\.$/, "")}`);
+        const more = errors.length - shown.length;
+        core.setFailed(
+          `CodeCharter rejected its configuration (exit code ${code}), so nothing was analyzed and no check, comment or SARIF was produced` + (shown.length ? `: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}. ` : ". The CLI did not name the error; see the CodeCharter log above. ") + `What to do: fix ${files.length ? files.map((f) => `\`${f}\``).join(", ") : "`.codecharter/config.yml`"} as the error says (a \`.codecharter/config.local.yml\` next to it is read too), then re-run.`
         );
       } else {
         const shown = code === null ? "null (the CodeCharter process was terminated)" : code;
@@ -71548,6 +71869,7 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   run().catch((err) => core.setFailed(err instanceof Error ? err.message : String(err)));
 }
 export {
+  CLI_COMPLETE_MARKER,
   MAX_COMMENT_CHARS,
   MAX_COMMENT_ROWS,
   PLATFORMS,
@@ -71556,7 +71878,9 @@ export {
   buildComment,
   buildCoverageComment,
   commentMarker,
+  completeExecutable,
   conclusionFor,
+  configErrorsFromLog,
   coverageBadgePayload,
   coverageConclusion,
   coverageFooterLine,
@@ -71566,6 +71890,7 @@ export {
   discoverSolutions,
   displayPath,
   downloadArchive,
+  escapeInline,
   failOnBadge,
   failOnColor,
   fetchManifest,
@@ -71574,8 +71899,10 @@ export {
   footerLine,
   formatDrift,
   formatRuleSources,
+  formatUnresolvedSources,
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
+  inconclusiveReasonsFromLog,
   isMainModule,
   isPercentInput,
   locationLink,
@@ -71584,9 +71911,12 @@ export {
   obtainCli,
   projectFailed,
   projectResultCell,
+  publishCli,
   publishViaPortal,
+  reachDetail,
   reachFromReport,
   readJson,
+  removeLeftoverCopies,
   resolveCoverageDiffArgs,
   resolveCoverageGitRef,
   resolveDiffArgs,
@@ -71602,6 +71932,7 @@ export {
   testCountsFor,
   testTableRows,
   titleFor,
+  uninstrumentedModules,
   upsertComment,
   validateCoverageDiffInputs,
   verifySha,

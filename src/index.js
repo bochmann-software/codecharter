@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
-import { core, exec, io, tc, cache, github, HttpClient } from './deps.js';
+import { core, exec, io, tc, cache, github, clock, HttpClient } from './deps.js';
 
 const MAX_COMMENT_ROWS = 100;
 
@@ -16,6 +16,9 @@ const MAX_COMMENT_ROWS = 100;
  * body, still fit.
  */
 const MAX_COMMENT_CHARS = 60000;
+
+/** The CLI exit code of an analyze run whose `.codecharter` config is invalid. */
+const CLI_EXIT_CONFIG_INVALID = 10;
 
 /** Placeholder for a table cell whose number the report does not carry. */
 const EM_DASH = '—';
@@ -28,10 +31,25 @@ const EM_DASH = '—';
  * containing a backslash cannot break the cell (or double-escape).
  */
 function escapeCell(value) {
+  return escapeInline(value);
+}
+
+/**
+ * Makes report- or log-derived text render literally inside one line of a
+ * comment or check summary. Line breaks collapse to spaces (no forged rows,
+ * headings or verdicts). Every character with an inline Markdown or HTML
+ * meaning is backslash-escaped, so a .NET exception message with backticks
+ * (List`1) does not open a code span, `<T>` is not swallowed as an HTML tag
+ * and identifiers keep their underscores. An `@name` mention gets a zero-width
+ * space after the `@`, so text from a fork's project names or rule files can
+ * never ping anyone under the action's identity. Pipes are escaped too, so the
+ * result is safe in a table cell.
+ */
+function escapeInline(value) {
   return String(value ?? '')
     .replace(/[\r\n]+/g, ' ')
-    .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|');
+    .replace(/[\\`*_[\]<>#|~&]/g, '\\$&')
+    .replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9])/g, '$1@​');
 }
 
 /**
@@ -140,6 +158,171 @@ function findExecutable(root, isWindows) {
     }
   }
   return null;
+}
+
+/**
+ * Marker file written last into a CLI copy in the tool cache. Its presence
+ * means the copy is complete: an extraction that crashed half-way, or one an
+ * older action version did in place, has no marker and is never run.
+ */
+const CLI_COMPLETE_MARKER = '.codecharter-complete';
+
+/**
+ * Waits between publish attempts, in milliseconds: one more attempt than
+ * entries is made before the run falls back to its own staging copy.
+ */
+const PUBLISH_BACKOFF_MS = [250, 1000, 2000];
+
+/** Rename errors of a lock that is likely to clear by itself. */
+const TRANSIENT_RENAME_ERRORS = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/** Restarts a folder's age (its mtime) at now; best-effort. */
+function touchFolder(dir) {
+  try {
+    const now = new Date();
+    fs.utimesSync(dir, now, now);
+  } catch (err) {
+    core.debug(`Could not touch ${dir}: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+/** Returns the executable of a complete (marker-carrying) CLI copy, or null. */
+function completeExecutable(dir, isWindows) {
+  if (!fs.existsSync(path.join(dir, CLI_COMPLETE_MARKER))) return null;
+  return findExecutable(dir, isWindows);
+}
+
+/** A unique sibling path of `dir`, on the same volume so a rename is atomic. */
+function siblingPath(dir, label) {
+  return `${dir}.${label}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+/** Renames a directory; returns the error code (or message) on failure, null on success. */
+function tryRename(from, to) {
+  try {
+    fs.renameSync(from, to);
+    return null;
+  } catch (err) {
+    core.debug(`Could not rename ${from} to ${to}: ${err instanceof Error ? err.message : err}`);
+    return (err && err.code) || (err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Leftover staging/stale copies younger than this may still be extracting or running. */
+const LEFTOVER_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Whether a process with this id runs on this machine (EPERM: it runs, as another user). */
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+/**
+ * Removes the staging and moved-aside copies of this version that jobs left
+ * behind when they were killed mid-install or could not delete them. Only a
+ * folder older than LEFTOVER_MIN_AGE_MS whose creating process no longer runs
+ * is removed, never `keep` (this run's own copy); a folder that cannot be
+ * removed (a job still runs from it) is left alone. Best-effort, never fails.
+ */
+async function removeLeftoverCopies(cliDir, keep, now = Date.now()) {
+  const parent = path.dirname(cliDir);
+  const prefix = `${path.basename(cliDir)}.`;
+  const pattern = /^(?:staging|stale)-(\d+)-[0-9a-f]+$/;
+  let names;
+  try {
+    names = fs.readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const match = pattern.exec(name.slice(prefix.length));
+    const full = path.join(parent, name);
+    if (!match || full === keep) continue;
+    try {
+      if (now - fs.statSync(full).mtimeMs < LEFTOVER_MIN_AGE_MS) continue;
+      if (processAlive(Number(match[1]))) continue;
+      await io.rmRF(full);
+      core.debug(`Removed the leftover CLI copy ${full}.`);
+    } catch (err) {
+      core.debug(`Kept the leftover CLI copy ${full}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+}
+
+/**
+ * Moves a complete staging copy into the versioned tool-cache directory with
+ * one atomic rename, so a concurrent job never sees a half-written version and
+ * a copy another job is running from is never rewritten. Several self-hosted
+ * runners can share one tool cache:
+ *   - when another job published the same version first, its copy is used and
+ *     the staging copy is discarded;
+ *   - an unmarked leftover at the target (half-extracted, or installed in place
+ *     by an older action version) is moved aside and replaced;
+ *   - when the copy cannot be published (the leftover cannot be moved because
+ *     a job runs from it, or the rename itself keeps failing), this job runs
+ *     from its own staging copy and the warning names the error.
+ * Afterwards, leftover copies of killed jobs are removed (removeLeftoverCopies).
+ * Returns the executable to run.
+ */
+async function publishCli(stagingDir, cliDir, isWindows) {
+  const exe = await publishOrKeep(stagingDir, cliDir, isWindows);
+  await removeLeftoverCopies(cliDir, stagingDir);
+  return exe;
+}
+
+async function publishOrKeep(stagingDir, cliDir, isWindows) {
+  let failure;
+  let blocked = false;
+  for (let attempt = 0; ; attempt++) {
+    failure = tryRename(stagingDir, cliDir);
+    if (!failure) return findExecutable(cliDir, isWindows);
+
+    const winner = completeExecutable(cliDir, isWindows);
+    if (winner) {
+      core.info('Another job installed this CodeCharter CLI version first; using its copy.');
+      await io.rmRF(stagingDir);
+      return winner;
+    }
+
+    const inTheWay = fs.existsSync(cliDir);
+    if (inTheWay) {
+      const aside = siblingPath(cliDir, 'stale');
+      const asideFailure = tryRename(cliDir, aside);
+      if (asideFailure && fs.existsSync(cliDir)) {
+        failure = asideFailure;
+        blocked = true;
+        break;
+      }
+      // Never deleted here: on Linux and macOS the rename succeeds even while a
+      // job (an older action version, which installs in place) still runs from
+      // the copy, and deleting it would pull the CLI out from under that job.
+      // Its age restarts now, so removeLeftoverCopies takes it after a day.
+      if (!asideFailure) touchFolder(aside);
+    }
+
+    if (attempt >= PUBLISH_BACKOFF_MS.length) break;
+    // A lock on a fresh copy (a virus scanner or indexer opening the new DLLs)
+    // clears within moments: wait before retrying, instead of failing three
+    // times in a row on the same lock.
+    if (!inTheWay && TRANSIENT_RENAME_ERRORS.has(failure)) await clock.sleep(PUBLISH_BACKOFF_MS[attempt]);
+  }
+
+  const cause = blocked
+    ? `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be ` +
+      `moved aside (${failure}), most likely because a job is still running from it.`
+    : `This run's CodeCharter CLI copy could not be moved into the tool cache at ${cliDir} (${failure}).`;
+  const remedy = blocked
+    ? 'What to do: delete that folder once no job uses it, so later runs share one copy again.'
+    : 'What to do: check that the tool cache folder is writable and not held by a virus scanner or indexer.';
+  core.warning(
+    `${cause} This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. ${remedy}`
+  );
+  return findExecutable(stagingDir, isWindows);
 }
 
 /**
@@ -582,6 +765,123 @@ function readJson(filePath) {
   }
 }
 
+/** Most reach-detail lines shown; the rest are counted, never silently dropped. */
+const MAX_REACH_DETAIL = 20;
+
+/** Longest single reach-detail line before it is cut. */
+const MAX_REACH_DETAIL_CHARS = 300;
+
+/** `run.reach` keys that are read on their own, so the generic detail skips them. */
+const REACH_KNOWN_KEYS = new Set([
+  'configured',
+  'resolved',
+  'evaluated',
+  'unresolvedSources',
+  'drift',
+  'coreLibraryUnresolvedProjects',
+  'isInconclusive',
+  'inconclusiveReasons',
+  'projectLoadFailures',
+  'workspaceLoadFailures',
+  'unevaluableRules',
+  'ruleFaults',
+]);
+
+/** How each `ruleFaults[].kind` reads in a sentence. */
+const RULE_FAULT_KINDS = {
+  'item-skipped': 'threw on some elements and skipped them',
+  'rule-aborted': 'threw and reported nothing',
+  'engine-defect': 'hit an engine defect and reported nothing',
+};
+
+/** One line of text: line breaks and runs of whitespace collapse, long text is cut. */
+function oneLine(value) {
+  const text = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > MAX_REACH_DETAIL_CHARS ? `${text.slice(0, MAX_REACH_DETAIL_CHARS - 1)}…` : text;
+}
+
+/** A plain string, or '' for anything else. */
+function text(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+/** "unrestoredProjects" → "unrestored projects". */
+function humanizeKey(key) {
+  return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
+/** A reach entry of a shape this version does not know, as readable text. */
+function describeEntry(entry) {
+  if (entry === null || typeof entry !== 'object') return String(entry);
+  return Object.entries(entry)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
+    .join(', ');
+}
+
+/** Where a faulted rule failed: the first elements it skipped, e.g. "method Lib.Calc.Add (Calc.cs:7)". */
+function faultElements(elements) {
+  if (!Array.isArray(elements)) return '';
+  const described = elements
+    .filter((e) => e && typeof e === 'object')
+    .map((e) => {
+      const name = [text(e.namespace), text(e.name)].filter(Boolean).join('.');
+      const file = text(e.filePath) ? path.basename(e.filePath.replace(/\\/g, '/')) : '';
+      const where = file ? ` (${file}${Number.isFinite(e.line) ? `:${e.line}` : ''})` : '';
+      return `${[text(e.kind).toLowerCase(), name].filter(Boolean).join(' ')}${where}`;
+    })
+    .filter(Boolean);
+  const shown = described.slice(0, 3);
+  const more = described.length - shown.length;
+  return shown.length ? ` on ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : '';
+}
+
+/** One sentence per `run.reach.ruleFaults` entry (CLI >= 1.7.0). */
+function describeRuleFault(f) {
+  const kind = RULE_FAULT_KINDS[f.kind] || `faulted (${text(f.kind) || 'unknown kind'})`;
+  const times = Number.isFinite(f.count) && f.count > 1 ? ` ${f.count} times` : '';
+  const types = Array.isArray(f.exceptionTypes) && f.exceptionTypes.length ? ` (${f.exceptionTypes.join(', ')})` : '';
+  const at =
+    f.expression && Number.isFinite(f.expression.line)
+      ? ` at rule line ${f.expression.line}${Number.isFinite(f.expression.column) ? `:${f.expression.column}` : ''}`
+      : '';
+  const message = text(f.message) ? `: ${f.message}` : '';
+  return `Rule ${text(f.ruleId) || 'unknown'} ${kind}${times}${types}${at}${faultElements(f.elements)}${message}`;
+}
+
+/**
+ * Which rule, project or workspace part made a run inconclusive, and why, from
+ * the detail arrays CLI 1.7.0 adds to `run.reach`: projectLoadFailures,
+ * workspaceLoadFailures, unevaluableRules and ruleFaults. Any other non-empty
+ * array in `run.reach` (a reason a later CLI adds) is rendered generically from
+ * its key and fields, so it is never dropped. Capped at MAX_REACH_DETAIL lines.
+ */
+function reachDetail(reach) {
+  const list = (key) => (Array.isArray(reach[key]) ? reach[key] : []);
+  const lines = [
+    ...list('projectLoadFailures').map(
+      (p) => `Project ${text(p && p.project) || 'unknown'} did not load: ${text(p && p.cause) || 'no cause given'}`
+    ),
+    ...list('workspaceLoadFailures').map((w) => `Workspace load failure: ${describeEntry(w)}`),
+    ...list('unevaluableRules').map(
+      (r) =>
+        `Rule ${text(r && r.ruleId) || 'unknown'} could not be evaluated: ${text(r && r.reason) || 'no reason given'}`
+    ),
+    ...list('ruleFaults')
+      .filter((f) => f && typeof f === 'object')
+      .map(describeRuleFault),
+  ];
+  for (const [key, value] of Object.entries(reach)) {
+    if (REACH_KNOWN_KEYS.has(key) || !Array.isArray(value)) continue;
+    for (const entry of value) lines.push(`${humanizeKey(key)}: ${describeEntry(entry)}`);
+  }
+  const shown = lines.slice(0, MAX_REACH_DETAIL).map(oneLine);
+  if (lines.length > shown.length) shown.push(`…and ${lines.length - shown.length} more (see the CodeCharter log)`);
+  return shown;
+}
+
 /**
  * Extracts the run's rule-source reach from a JSON report (CLI >= 1.6.4):
  * `run.reach` (configured/resolved/evaluated rule counts, unresolved sources,
@@ -609,6 +909,7 @@ function reachFromReport(report) {
       ? reach.coreLibraryUnresolvedProjects
       : [],
     ruleSources: Array.isArray(run.ruleSources) ? run.ruleSources : [],
+    detail: reachDetail(reach),
   };
 }
 
@@ -623,11 +924,36 @@ function formatRuleSources(ruleSources) {
   return ruleSources
     .map((s) => {
       const identity = s.identity || s.declaredIdentity || 'unknown source';
-      if (s.isResolved === false) return `${identity} (unresolved)`;
+      if (s.isResolved === false) {
+        const reason = unresolvedReason(s);
+        return `${identity} (unresolved${reason ? `: ${reason}` : ''})`;
+      }
       const count = typeof s.resolvedCount === 'number' ? s.resolvedCount : 0;
       return `${count} from ${identity}`;
     })
     .join(', ');
+}
+
+/**
+ * Why a rule source did not resolve (`unresolvedReason`, CLI >= 1.7.0), without
+ * its closing period, or '' when the report does not say.
+ */
+function unresolvedReason(source) {
+  const reason = source && typeof source.unresolvedReason === 'string' ? source.unresolvedReason.trim() : '';
+  return reason.replace(/\.$/, '');
+}
+
+/**
+ * Each `run.reach.unresolvedSources` entry, followed by the reason its
+ * `run.ruleSources` entry gives when it gives one, e.g.
+ * ".codecharter/missing-rules (directory '.codecharter/missing-rules' does not exist)".
+ */
+function formatUnresolvedSources(reach) {
+  return reach.unresolvedSources.map((name) => {
+    const source = reach.ruleSources.find((s) => s && (s.identity === name || s.declaredIdentity === name));
+    const reason = unresolvedReason(source);
+    return reason ? `${name} (${reason})` : name;
+  });
 }
 
 /**
@@ -648,6 +974,52 @@ function formatDrift(drift) {
       .join(', ');
     return `${d.kind || 'drift'}${rest ? ` (${rest})` : ''}`;
   });
+}
+
+/**
+ * Reason codes of an inconclusive run that wrote no JSON report, read from the
+ * CLI's log, or null when the log does not name an inconclusive run. A run
+ * with no rule source at all exits 2 before it renders any output, so its
+ * report is missing; the CLI still prints the headline `Inconclusive run: ...`
+ * followed by one `  [<code>] <description>` line per reason on stderr.
+ * Annotation lines start with `::` and never match, nor does a `[word]` line
+ * that is not indented.
+ */
+function inconclusiveReasonsFromLog(output) {
+  if (!/^Inconclusive run:/m.test(output || '')) return null;
+  // Spaces or tabs only: `\s` would also take the line break of a CRLF log or
+  // a blank line, and count a non-indented `[word]` line as a reason.
+  const codes = [...output.matchAll(/^[ \t]+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
+  return [...new Set(codes)];
+}
+
+const CONFIG_ERROR_PREFIX = 'Config error in ';
+
+/**
+ * The CLI's config errors from its log (`Config error in <file>: <error>`),
+ * each once, for a run that exited 10 (invalid config) without a report.
+ * The file is the first `: `-separated part, so an error text may contain
+ * colons of its own.
+ */
+function configErrorsFromLog(output) {
+  const seen = new Set();
+  const errors = [];
+  // Plain string scanning: a regular expression with two lazy groups backtracks
+  // polynomially on a long line of repeated `a: a`.
+  for (const raw of (output || '').split('\n')) {
+    if (!raw.startsWith(CONFIG_ERROR_PREFIX)) continue;
+    const rest = raw.slice(CONFIG_ERROR_PREFIX.length);
+    const separator = rest.indexOf(': ', 1);
+    if (separator < 0) continue;
+    const file = rest.slice(0, separator).trim();
+    const error = rest.slice(separator + 2).trim();
+    if (!file || !error) continue;
+    const line = `${file}: ${error}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    errors.push({ file, error });
+  }
+  return errors;
 }
 
 /**
@@ -716,7 +1088,7 @@ function severityBadge(severity) {
 function locationLink(violation, workspace, repoFull, sha) {
   const rel = displayPath(violation.filePath, workspace);
   if (!rel) return '-';
-  const name = rel.split('/').pop();
+  const name = escapeInline(rel.split('/').pop());
   if (violation.lineNumber) {
     return `[${name}:${violation.lineNumber}](https://github.com/${repoFull}/blob/${sha}/${rel}#L${violation.lineNumber})`;
   }
@@ -784,15 +1156,20 @@ function buildComment(report, counts, workspace, opts) {
   const reach = reachFromReport(report);
   if (reach) {
     if (reach.isInconclusive) {
-      const reasons = reach.reasons.length ? reach.reasons.join(', ') : 'no reason was reported';
+      // Everything below comes from the report, so it is escaped for the comment.
+      const reasons = reach.reasons.length ? reach.reasons.map(escapeInline).join(', ') : 'no reason was reported';
       lines.push(`**Inconclusive run** — ${reasons}.`, '');
-      for (const line of formatDrift(reach.drift)) lines.push(`- ${line}`);
-      if (reach.unresolvedSources.length) lines.push(`- Unresolved: ${reach.unresolvedSources.join(', ')}`);
+      for (const line of formatDrift(reach.drift)) lines.push(`- ${escapeInline(line)}`);
+      if (reach.unresolvedSources.length)
+        lines.push(`- Unresolved: ${formatUnresolvedSources(reach).map(escapeInline).join(', ')}`);
       if (reach.coreLibraryUnresolvedProjects.length)
-        lines.push(`- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.join(', ')}`);
+        lines.push(
+          `- Core library not resolved for: ${reach.coreLibraryUnresolvedProjects.map(escapeInline).join(', ')}`
+        );
+      for (const line of reach.detail) lines.push(`- ${escapeInline(line)}`);
       lines.push('');
     } else {
-      const sources = formatRuleSources(reach.ruleSources);
+      const sources = escapeInline(formatRuleSources(reach.ruleSources));
       const parts = [];
       if (reach.evaluated !== undefined) parts.push(`${reach.evaluated} rule(s) evaluated`);
       if (reach.resolved !== undefined && reach.resolved !== reach.evaluated) parts.push(`${reach.resolved} resolved`);
@@ -902,7 +1279,50 @@ function coverageSummary(report) {
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
     diff,
+    uninstrumented: uninstrumentedModules(report),
   };
+}
+
+/**
+ * The report's `uninstrumentedModules` (CLI >= 1.7.0): first-party modules the
+ * run expected to measure that coverlet never instrumented. Any entry makes the
+ * CLI fail the gate closed (exit code 2) even when every test passed, because
+ * the measured percentage lacks all of those modules' lines. Older reports do
+ * not carry the key and yield an empty list.
+ */
+function uninstrumentedModules(report) {
+  const modules = report && report.uninstrumentedModules;
+  if (!Array.isArray(modules)) return [];
+  return modules
+    .filter((m) => m && typeof m === 'object' && typeof m.module === 'string')
+    .map((m) => ({
+      module: m.module,
+      projectFile: typeof m.projectFile === 'string' ? m.projectFile : '',
+      reason: typeof m.reason === 'string' ? m.reason : '',
+    }));
+}
+
+/**
+ * The comment section naming the modules coverlet did not instrument, or
+ * nothing when every expected module was measured.
+ */
+function uninstrumentedLines(summary, workspace) {
+  const modules = summary.uninstrumented;
+  if (modules.length === 0) return [];
+  const lines = [
+    `### Modules not measured (${modules.length})`,
+    '',
+    'Coverlet did not instrument these modules, so none of their lines reached the gate and it failed closed.',
+    '',
+    '| Module | Project | Reason |',
+    '|--------|---------|--------|',
+  ];
+  for (const m of modules) {
+    const project = displayPath(m.projectFile, workspace) || EM_DASH;
+    lines.push(`| ${escapeCell(m.module)} | ${escapeCell(project)} | ${escapeCell(m.reason || EM_DASH)} |`);
+  }
+  lines.push('');
+  return lines;
 }
 
 /**
@@ -1135,7 +1555,11 @@ function buildCoverageComment(summary, workspace, opts) {
 
   // Everything around the test table is the same at every detail level, so it is
   // built once and only the table is re-rendered while looking for a fit.
-  const head = [...coverageHeadLines(summary, heading), ...diffCoverageLines(summary.diff, workspace, opts)];
+  const head = [
+    ...coverageHeadLines(summary, heading),
+    ...uninstrumentedLines(summary, workspace),
+    ...diffCoverageLines(summary.diff, workspace, opts),
+  ];
   const tail = coverageRegionLines(summary, workspace, opts);
 
   let markdown = '';
@@ -1228,7 +1652,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
     if (truncated) break;
     lines.push(
       '<details>',
-      `<summary>${file} (${regions.length} ${label})</summary>`,
+      `<summary>${escapeInline(file)} (${regions.length} ${label})</summary>`,
       '',
       '| Lines | Method | Location |',
       '|-------|--------|----------|'
@@ -1245,8 +1669,8 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
       const method = escapeCell(region.method);
       const link =
         repoFull && sha && first
-          ? `[${file}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})`
-          : `${file}:${first ?? '?'}`;
+          ? `[${escapeInline(file)}:${first}](https://github.com/${repoFull}/blob/${sha}/${file}#L${first})`
+          : `${escapeInline(file)}:${first ?? '?'}`;
       lines.push(`| ${span} | ${method} | ${link} |`);
       rendered++;
     }
@@ -1279,6 +1703,9 @@ function coverageRegionLines(summary, workspace, opts) {
  * one ran, otherwise the whole-solution gate.
  */
 function coverageFooterLine(summary, failOnThreshold) {
+  if (summary.uninstrumented.length > 0) {
+    return '_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._';
+  }
   const diff = summary.diff;
   if (diff) {
     if (diff.met) {
@@ -1311,6 +1738,9 @@ function coverageConclusion(exitCode, failOnThreshold) {
 
 /** One-line check-run title for a coverage run, naming the gate that decided it. */
 function coverageTitle(exitCode, summary) {
+  if (exitCode === 2 && summary.uninstrumented.length > 0) {
+    return `Coverage incomplete: ${summary.uninstrumented.length} module(s) not instrumented`;
+  }
   if (exitCode === 2) return 'Tests failed or coverage was incomplete';
   if (exitCode === 3) return 'No coverage data';
   if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
@@ -1453,6 +1883,14 @@ async function fetchManifest(portal, platform, version, apiKey) {
  * holds only the generic binary — the minted license lives elsewhere and is
  * never cached. Caching is best-effort: any cache error falls back to a fresh
  * download, so it never breaks a run.
+ *
+ * With caching on, the CLI lives in the runner's tool cache, which several
+ * self-hosted runners on one machine may share. A complete copy there (see
+ * CLI_COMPLETE_MARKER) is reused as-is and never rewritten; a new copy is
+ * assembled in a per-run staging directory and published by publishCli. The
+ * Actions cache entry is restored into and saved from a runner-local transit
+ * directory, never from the shared tool cache. With `cache: false` the CLI is
+ * downloaded into the run's own temp directory and the tool cache is untouched.
  */
 async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, cacheEnabled }) {
   const cacheBase = process.env.RUNNER_TOOL_CACHE || path.join(os.homedir() || tmp, '.codecharter');
@@ -1489,6 +1927,19 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
   const cliDir = path.join(cacheBase, 'codecharter-cli', platform, keyVersion);
   const cacheKey = `codecharter-cli-${platform}-${keyVersion}`;
 
+  // A complete copy in the tool cache (this runner's, or one another runner on
+  // the same machine shares) is used as-is: rewriting it would break any job
+  // running from it right now.
+  if (cacheEnabled) {
+    const installed = completeExecutable(cliDir, isWindows);
+    if (installed) {
+      core.info(`Using the CodeCharter CLI from the tool cache (${platform}, ${keyVersion}).`);
+      // Runs that only reuse a copy still clear what killed jobs left behind.
+      await removeLeftoverCopies(cliDir, null);
+      return installed;
+    }
+  }
+
   // Only use the cache when the Actions cache service is actually reachable;
   // on runners without it, isFeatureAvailable() is false and we skip quietly
   // instead of emitting the library's restore/save warnings every run.
@@ -1514,48 +1965,83 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
     }
   }
 
-  // Start clean so a stale local copy (persistent self-hosted runner) cannot
-  // shadow a cache miss.
-  await io.rmRF(cliDir);
-  await io.mkdirP(cliDir);
+  // The copy this run assembles: a fresh staging sibling of the versioned
+  // tool-cache directory (published atomically below), or with `cache: false`
+  // a directory of this run's own that nothing else ever sees. It is created
+  // only once the CLI is at hand (restored, or downloaded and verified), and
+  // removed again if assembling it fails, so a failed run leaves nothing in
+  // the shared tool cache.
+  const installDir = cacheEnabled ? siblingPath(cliDir, 'staging') : path.join(tmp, 'cli');
 
+  // The Actions cache restores into, and saves from, the path it was given, so
+  // that path must stay stable across runs yet belong to this runner alone.
+  const transitDir = path.join(process.env.RUNNER_TEMP || tmp, 'codecharter-cli', platform, keyVersion);
+  let fromCache = false;
   if (canCache) {
+    await io.rmRF(transitDir);
+    await io.mkdirP(transitDir);
     try {
-      if (await cache.restoreCache([cliDir], cacheKey)) {
-        const cached = findExecutable(cliDir, isWindows);
-        if (cached) {
-          if (!isWindows) fs.chmodSync(cached, 0o755);
-          core.info(`Using cached CodeCharter CLI (${platform}, ${keyVersion}).`);
-          return cached;
-        }
+      if ((await cache.restoreCache([transitDir], cacheKey)) && findExecutable(transitDir, isWindows)) {
+        fromCache = true;
+        core.info(`Using cached CodeCharter CLI (${platform}, ${keyVersion}).`);
       }
     } catch (err) {
       core.debug(`Cache restore skipped: ${err instanceof Error ? err.message : err}`);
     }
   }
 
-  core.info(`Downloading CodeCharter CLI (${platform}, ${downloadVersion}) from ${portal}`);
-  const url = `${portal}/api/v1/cli/${platform}/${downloadVersion}`;
-  const { archive, expectedSha } = await downloadArchive(url, apiKey, tmp, isWindows);
-  // Prefer the manifest's SHA-256 when we resolved one: it pins the cached
-  // artifact to the exact version the cache key names. Otherwise trust the
-  // download's own X-CodeCharter-Sha256 header.
-  await verifySha(archive, manifestSha || expectedSha);
-  if (isWindows) {
-    await tc.extractZip(archive, cliDir);
-  } else {
-    await tc.extractTar(archive, cliDir);
+  let archive = null;
+  if (!fromCache) {
+    core.info(`Downloading CodeCharter CLI (${platform}, ${downloadVersion}) from ${portal}`);
+    const url = `${portal}/api/v1/cli/${platform}/${downloadVersion}`;
+    const downloaded = await downloadArchive(url, apiKey, tmp, isWindows);
+    // Prefer the manifest's SHA-256 when we resolved one: it pins the cached
+    // artifact to the exact version the cache key names. Otherwise trust the
+    // download's own X-CodeCharter-Sha256 header.
+    await verifySha(downloaded.archive, manifestSha || downloaded.expectedSha);
+    archive = downloaded.archive;
   }
 
-  const exe = findExecutable(cliDir, isWindows);
-  if (!exe) {
-    throw new Error('Extracted archive does not contain a codecharter executable.');
-  }
-  if (!isWindows) fs.chmodSync(exe, 0o755);
+  let staged;
+  try {
+    await io.mkdirP(installDir);
+    if (archive) {
+      const extractDir = canCache ? transitDir : installDir;
+      if (canCache) {
+        // Drop whatever a failed restore may have left behind.
+        await io.rmRF(transitDir);
+        await io.mkdirP(transitDir);
+      }
+      if (isWindows) {
+        await tc.extractZip(archive, extractDir);
+      } else {
+        await tc.extractTar(archive, extractDir);
+      }
+      if (!findExecutable(extractDir, isWindows)) {
+        throw new Error('Extracted archive does not contain a codecharter executable.');
+      }
+    }
+    if (canCache) fs.cpSync(transitDir, installDir, { recursive: true });
 
-  if (canCache) {
+    staged = findExecutable(installDir, isWindows);
+    if (!isWindows) fs.chmodSync(staged, 0o755);
+    if (cacheEnabled) {
+      // Written last: only a copy carrying the marker is ever reused.
+      fs.writeFileSync(
+        path.join(installDir, CLI_COMPLETE_MARKER),
+        JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: new Date().toISOString() })
+      );
+    }
+  } catch (err) {
+    await io.rmRF(installDir);
+    throw err;
+  }
+
+  const exe = cacheEnabled ? await publishCli(installDir, cliDir, isWindows) : staged;
+
+  if (canCache && !fromCache) {
     try {
-      await cache.saveCache([cliDir], cacheKey);
+      await cache.saveCache([transitDir], cacheKey);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/reserve|already exists|already been/i.test(msg)) {
@@ -1692,6 +2178,16 @@ async function runCoverage(ctx) {
     } else {
       core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
     }
+    return;
+  }
+  if (code === 2 && summary.uninstrumented.length > 0) {
+    const names = summary.uninstrumented.map((m) => (m.reason ? `${m.module} (${m.reason})` : m.module)).join('; ');
+    core.setFailed(
+      `The coverage gate failed closed: coverlet did not instrument ${summary.uninstrumented.length} module(s) ` +
+        `the run expected to measure, so their lines never reached the gate: ${names}. ` +
+        "What to do: make sure each module's PDB sits next to it and its source paths exist on the runner " +
+        '(deterministic builds), then re-run; see `uninstrumentedModules` in the coverage report.'
+    );
     return;
   }
   if (code === 2) {
@@ -2069,6 +2565,10 @@ async function run() {
 
     // An inconclusive report, or none usable, fails the step even on exit code 0; the
     // inconclusive case matches the failing check run it produced above.
+    // Without a report, the log still tells an inconclusive run (no rule
+    // source at all) apart from a crash.
+    const logReasons = report ? null : inconclusiveReasonsFromLog(output);
+    if (logReasons) core.setOutput('inconclusive', 'true');
     if (code !== 0 || inconclusive || !report) {
       if (/Path to dotnet executable is not set|Microsoft\.Build\.Locator|MSBuildLocator/i.test(output)) {
         core.error(
@@ -2099,9 +2599,25 @@ async function run() {
       // declared one failed to (stale lock, config pin drift, …). Report it as
       // its own failure mode, independent of `fail-on`/`fail-on: never`, so it
       // is never mistaken for "0 findings, gate satisfied".
-      if (inconclusive) {
+      if (logReasons) {
+        const noSource = logReasons.includes('no-rule-source');
+        core.setFailed(
+          `CodeCharter's run was inconclusive (exit code ${code}): ` +
+            `${logReasons.length ? logReasons.join(', ') : 'no reason was reported'}. The CLI wrote no report, so ` +
+            'no check, comment or SARIF was produced. ' +
+            (noSource
+              ? 'No rule source resolved, so nothing was checked. What to do: declare a `profiles:` or `rules:` ' +
+                'entry in `.codecharter/config.yml`, or set the `rules` input.'
+              : 'What to do: check the CodeCharter log above for the specific cause.') +
+            ' See the action README, section "Rules resolution".'
+        );
+      } else if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(', ') : 'no reason was reported';
-        const driftDetail = formatDrift(reach.drift).join('; ');
+        const driftDetail = [
+          ...formatDrift(reach.drift),
+          ...formatUnresolvedSources(reach).map((u) => `unresolved: ${u}`),
+          ...reach.detail,
+        ].join('; ');
         core.setFailed(
           `CodeCharter's run was inconclusive (exit code ${code}): ${reasons}` +
             `${driftDetail ? ` — ${driftDetail}` : ''}. This is independent of \`fail-on\` — the CLI could ` +
@@ -2120,6 +2636,22 @@ async function run() {
           `CodeCharter found ${c.error} error / ${c.warn} warning / ${c.info} info finding(s) and the ` +
             `\`fail-on: ${failOn}\` gate failed the build. What to do: fix the findings above, or relax ` +
             '`fail-on` (`warn`, `info`, or `never`) to stop them from failing the build.'
+        );
+      } else if (code === CLI_EXIT_CONFIG_INVALID) {
+        // The CLI rejected its configuration before analyzing anything; its
+        // stderr names the file and the error.
+        const errors = configErrorsFromLog(output);
+        const files = [...new Set(errors.map((e) => e.file))];
+        const shown = errors.slice(0, 5).map((e) => `${e.file}: ${e.error.replace(/\.$/, '')}`);
+        const more = errors.length - shown.length;
+        core.setFailed(
+          `CodeCharter rejected its configuration (exit code ${code}), so nothing was analyzed and no check, ` +
+            'comment or SARIF was produced' +
+            (shown.length
+              ? `: ${shown.join('; ')}${more > 0 ? `; and ${more} more` : ''}. `
+              : '. The CLI did not name the error; see the CodeCharter log above. ') +
+            `What to do: fix ${files.length ? files.map((f) => `\`${f}\``).join(', ') : '`.codecharter/config.yml`'} ` +
+            'as the error says (a `.codecharter/config.local.yml` next to it is read too), then re-run.'
         );
       } else {
         // No report: a real failure (crash, missing SDK, bad solution path,
@@ -2177,6 +2709,7 @@ if (isMainModule(import.meta.url, process.argv[1])) {
 // them lets the tests exercise every branch and edge case without spinning up
 // the whole action.
 export {
+  escapeInline,
   run,
   runCoverage,
   coverageSummary,
@@ -2201,18 +2734,27 @@ export {
   coverageFooterLine,
   coverageConclusion,
   coverageTitle,
+  uninstrumentedModules,
   isMainModule,
   commentMarker,
   resolvePlatform,
   downloadArchive,
   verifySha,
   findExecutable,
+  completeExecutable,
+  publishCli,
+  removeLeftoverCopies,
+  CLI_COMPLETE_MARKER,
   discoverSolutions,
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
   reachFromReport,
+  inconclusiveReasonsFromLog,
+  configErrorsFromLog,
   formatRuleSources,
   formatDrift,
+  formatUnresolvedSources,
+  reachDetail,
   resolveDiffArgs,
   fetchManifest,
   obtainCli,

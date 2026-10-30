@@ -1,0 +1,40 @@
+{
+  "summary": {
+    "totalLines": 6,
+    "coveredLines": 3,
+    "percent": 50,
+    "minimumRequiredPercent": 100,
+    "hasMetThreshold": false,
+    "minimumRequiredPercentSource": "cli-flag",
+    "unresolvedSourceFileCount": 0,
+    "coverageFilesOldestUtc": "2026-10-30T02:30:12.3178426Z",
+    "coverageFilesNewestUtc": "2026-10-30T02:30:12.3178426Z"
+  },
+  "testResults": [
+    {
+      "project": "Lib.Tests",
+      "exitCode": 0,
+      "succeeded": true,
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "failureReason": null
+    }
+  ],
+  "uncoveredRegions": [
+    {
+      "file": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+      "relativeFile": "src/Lib/Calc.cs",
+      "method": "Negate",
+      "complexity": 1,
+      "lines": [14, 15, 16],
+      "snippet": "11: \n12:     /// <summary>Negates a number.</summary>\n13:     public static int Negate(int a)\n14:     {\n15:         return -a;\n16:     }\n17: }",
+      "snippetStartLine": 11,
+      "snippetEndLine": 17,
+      "reason": "3 consecutive lines never executed."
+    }
+  ],
+  "diffCoverage": null,
+  "uninstrumentedModules": []
+}
