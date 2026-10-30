@@ -268,7 +268,7 @@ outputs:
   sarif-path:
     description: Path to the generated SARIF file, if sarif-output was set. Unset when the run is inconclusive (the file is removed).
   inconclusive:
-    description: "'true' when the run was inconclusive (the rule sources could not be established), 'false' otherwise. Empty when no report was produced."
+    description: "'true' when the run was inconclusive (the rule sources could not be established), 'false' otherwise. Also 'true' for a run without a report whose log names it inconclusive (no rule source at all); empty for any other run without a report."
 
 runs:
   using: node24

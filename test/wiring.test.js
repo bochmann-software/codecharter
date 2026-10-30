@@ -284,10 +284,19 @@ test('coverage mode: falls back to the workflow-token comment when the portal de
 // ---------------------------------------------------------------------------
 
 // Drives run() in analyze mode against a stubbed download/extract/CLI, and
-// returns the payload posted to the portal.
+// returns the payload posted to the portal. `report` replaces the whole JSON
+// report (`null` writes none, like a CLI that stops before rendering), and
+// `stderr` is what the CLI prints to its error stream.
 async function analyzeRun(
   inputs = {},
-  { violations = [{ severity: 'error' }], exitCode = 0, reportExtra = {}, staleSarif = false } = {}
+  {
+    violations = [{ severity: 'error' }],
+    exitCode = 0,
+    reportExtra = {},
+    staleSarif = false,
+    report = undefined,
+    stderr = '',
+  } = {}
 ) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-ws-'));
   fs.writeFileSync(path.join(workspace, 'App.sln'), '');
@@ -317,7 +326,10 @@ async function analyzeRun(
     if (cmd === 'git') return fakeGit(args, opts);
     cliArgs = args;
     const jsonArg = args.find((a) => typeof a === 'string' && a.startsWith('json:'));
-    fs.writeFileSync(jsonArg.slice('json:'.length), JSON.stringify({ violations, ...reportExtra }));
+    if (report !== null) {
+      fs.writeFileSync(jsonArg.slice('json:'.length), JSON.stringify(report ?? { violations, ...reportExtra }));
+    }
+    if (stderr) opts.listeners?.stderr(Buffer.from(stderr));
     const sarifArg = args.find((a) => typeof a === 'string' && a.startsWith('sarif:'));
     sarifAtExec = sarifArg ? fs.existsSync(sarifArg.slice('sarif:'.length)) : null;
     if (sarifArg) fs.writeFileSync(sarifArg.slice('sarif:'.length), '{}');
@@ -585,6 +597,63 @@ test('analyze mode: a conclusive run surfaces rule-source reach in the comment',
     payload.summary,
     /_Reach: 254 rule\(s\) evaluated, 247 configured — 247 from codeguard\/csharp-all@1\.2\.0, 7 from \.codecharter\/rules\._/
   );
+});
+
+test('coverage mode: a CLI 1.7.0 run with an uninstrumented module fails closed and names it', async () => {
+  const payload = await coverageRun(realReport('coverage-1.7.0-uninstrumented.json'), { failOnThreshold: false }, 2);
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Coverage incomplete: 1 module(s) not instrumented');
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /failed closed: coverlet did not instrument 1 module\(s\)/);
+  assert.match(failures[0], /never reached the gate: Lib\. What to do/);
+  assert.doesNotMatch(failures[0], /fix the failing tests/);
+});
+
+test('coverage mode: an uninstrumented module with a coverlet reason quotes it', async () => {
+  const report = realReport('coverage-1.7.0-uninstrumented.json');
+  report.uninstrumentedModules[0].reason = 'PDB not found';
+  await coverageRun(report, {}, 2);
+  assert.match(failures[0], /never reached the gate: Lib \(PDB not found\)\./);
+});
+
+test('analyze mode: a real CLI 1.7.0 report passes as a conclusive run with its findings', async () => {
+  const payload = await analyzeRun({}, { report: realReport('analyze-1.7.0-rules-dir.json'), exitCode: 0 });
+  assert.deepEqual(failures, []);
+  assert.equal(outputs['findings-total'], 4);
+  assert.equal(outputs['findings-info'], 4);
+  assert.equal(outputs.inconclusive, 'false');
+  assert.equal(payload.conclusion, 'success');
+  assert.match(payload.summary, /_Reach: 126 rule\(s\) evaluated — 126 from rules\._/);
+});
+
+test('analyze mode: a CLI 1.7.0 run without a rule source fails as inconclusive, not as a crash', async () => {
+  const stderr = fs.readFileSync(path.join(FIXTURES, 'analyze-1.7.0-no-rule-source.stderr.txt'), 'utf8');
+  const payload = await analyzeRun({}, { report: null, exitCode: 2, stderr });
+  assert.equal(payload, undefined, 'without a report no check is posted');
+  assert.equal(outputs.inconclusive, 'true');
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /inconclusive \(exit code 2\): no-rule-source\. The CLI wrote no report/);
+  assert.match(failures[0], /declare a `profiles:` or `rules:` entry/);
+  assert.doesNotMatch(failures[0], /without producing results/);
+});
+
+test('analyze mode: a report-less inconclusive run for another reason points at the log', async () => {
+  const stderr =
+    'Inconclusive run: 0 rules evaluated, 0 resolved.\n  [workspace-load-failed] The workspace did not load.\n';
+  await analyzeRun({}, { report: null, exitCode: 2, stderr });
+  assert.match(failures[0], /inconclusive \(exit code 2\): workspace-load-failed\./);
+  assert.match(failures[0], /check the CodeCharter log above/);
+});
+
+test('analyze mode: a report-less inconclusive headline without reason lines says none was reported', async () => {
+  await analyzeRun({}, { report: null, exitCode: 2, stderr: 'Inconclusive run: 0 rules evaluated, 0 resolved.\n' });
+  assert.match(failures[0], /inconclusive \(exit code 2\): no reason was reported\./);
+});
+
+test('analyze mode: a crash without a report still fails as a crash', async () => {
+  await analyzeRun({}, { report: null, exitCode: 1, stderr: 'Unhandled exception.\n' });
+  assert.match(failures[0], /failed \(exit code 1\) without producing results/);
+  assert.equal(outputs.inconclusive, undefined);
 });
 
 test('analyze mode: an unknown mode fails before anything runs', async () => {

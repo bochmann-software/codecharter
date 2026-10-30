@@ -1,0 +1,98 @@
+{
+  "summary": {
+    "totalViolations": 4,
+    "totalTypes": 2,
+    "totalMethods": 3,
+    "durationMs": 2406
+  },
+  "run": {
+    "analysisUnit": "Sample.sln",
+    "analysisUnitKind": "solution",
+    "ruleSources": [
+      {
+        "kind": "rules-directory",
+        "identity": "rules",
+        "declaredIdentity": "rules",
+        "configuredCount": 126,
+        "resolvedCount": 126,
+        "shadowedCount": 0,
+        "isResolved": true
+      }
+    ],
+    "reach": {
+      "configured": 126,
+      "resolved": 126,
+      "evaluated": 126,
+      "unresolvedSources": [],
+      "drift": [],
+      "coreLibraryUnresolvedProjects": [],
+      "projectLoadFailures": [],
+      "isInconclusive": false,
+      "inconclusiveReasons": [],
+      "unevaluableRules": [],
+      "workspaceLoadFailures": [],
+      "ruleFaults": []
+    }
+  },
+  "violations": [
+    {
+      "ruleId": "static-class-non-extension",
+      "ruleName": "Static class has public non-extension methods",
+      "severity": "info",
+      "category": "Design",
+      "entityName": "Lib.Calc",
+      "entityKind": "Class",
+      "filePath": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+      "lineNumber": 4,
+      "message": "Static class has public non-extension methods: Lib.Calc",
+      "description": "Cohesion / dependency inversion: a public static class whose public methods are not extension methods is a hidden service — it couples every caller directly to the implementation with no seam for testing or substitution. Static utility behaviour that cannot be expressed as an extension method belongs behind an interface.",
+      "recommendation": "Preferred: extract the logic into an instance class, define an interface, and register it in DI (e.g. 'ISlugGenerator' / 'SlugGenerator'). If the method is a pure transform on its first argument, convert it to a true extension method by adding 'this' to that parameter. Internal static classes used only within the same assembly are exempt from this rule.",
+      "fingerprint": "b087d344a73b7f788489f22ac2c1b952"
+    },
+    {
+      "ruleId": "missing-param-doc",
+      "ruleName": "Documented method has undocumented parameter",
+      "severity": "info",
+      "category": "Documentation",
+      "entityName": "a",
+      "entityKind": "Parameter",
+      "filePath": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+      "lineNumber": 7,
+      "column": 31,
+      "message": "Documented method has undocumented parameter: a",
+      "description": "Incomplete API contracts erode trust in documentation: a method that carries a <summary> but omits <param> tags for one or more parameters signals to callers that the docs cannot be relied upon. Partial documentation is often worse than none, because it creates a false sense of completeness.",
+      "recommendation": "Add a <param name=\"paramName\">Description</param> tag for every undocumented parameter. Before: /// <summary>Formats a value.</summary>\npublic string Format(string value, int precision). After: /// <summary>Formats a value.</summary>\n/// <param name=\"value\">The raw value to format.</param>\n/// <param name=\"precision\">Number of decimal places.</param>\npublic string Format(string value, int precision). If the method is an override or interface implementation, use <inheritdoc/> instead of duplicating the base documentation.",
+      "fingerprint": "6c88fcba344a430d8610bc1a94f35a61"
+    },
+    {
+      "ruleId": "missing-param-doc",
+      "ruleName": "Documented method has undocumented parameter",
+      "severity": "info",
+      "category": "Documentation",
+      "entityName": "b",
+      "entityKind": "Parameter",
+      "filePath": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+      "lineNumber": 7,
+      "column": 38,
+      "message": "Documented method has undocumented parameter: b",
+      "description": "Incomplete API contracts erode trust in documentation: a method that carries a <summary> but omits <param> tags for one or more parameters signals to callers that the docs cannot be relied upon. Partial documentation is often worse than none, because it creates a false sense of completeness.",
+      "recommendation": "Add a <param name=\"paramName\">Description</param> tag for every undocumented parameter. Before: /// <summary>Formats a value.</summary>\npublic string Format(string value, int precision). After: /// <summary>Formats a value.</summary>\n/// <param name=\"value\">The raw value to format.</param>\n/// <param name=\"precision\">Number of decimal places.</param>\npublic string Format(string value, int precision). If the method is an override or interface implementation, use <inheritdoc/> instead of duplicating the base documentation.",
+      "fingerprint": "5c4859b1fc74ffb1a60d337102fc0ec9"
+    },
+    {
+      "ruleId": "missing-param-doc",
+      "ruleName": "Documented method has undocumented parameter",
+      "severity": "info",
+      "category": "Documentation",
+      "entityName": "a",
+      "entityKind": "Parameter",
+      "filePath": "/home/runner/work/sample/sample/src/Lib/Calc.cs",
+      "lineNumber": 13,
+      "column": 34,
+      "message": "Documented method has undocumented parameter: a",
+      "description": "Incomplete API contracts erode trust in documentation: a method that carries a <summary> but omits <param> tags for one or more parameters signals to callers that the docs cannot be relied upon. Partial documentation is often worse than none, because it creates a false sense of completeness.",
+      "recommendation": "Add a <param name=\"paramName\">Description</param> tag for every undocumented parameter. Before: /// <summary>Formats a value.</summary>\npublic string Format(string value, int precision). After: /// <summary>Formats a value.</summary>\n/// <param name=\"value\">The raw value to format.</param>\n/// <param name=\"precision\">Number of decimal places.</param>\npublic string Format(string value, int precision). If the method is an override or interface implementation, use <inheritdoc/> instead of duplicating the base documentation.",
+      "fingerprint": "bd9d93e006547f9f50ebd9a468bfcbca"
+    }
+  ]
+}

@@ -25,6 +25,19 @@ the latest release in its line.
   so the first run after upgrading downloads the CLI once more. With
   `cache: false` the CLI is downloaded into the run's temp folder and the tool
   cache is not touched.
+- A run with no rule source at all no longer fails as "CodeCharter failed
+  (exit code 2) without producing results", with hints about a missing .NET
+  SDK or a bad `solution` path. The CLI writes no JSON report for that run, so
+  the action now reads the `Inconclusive run` lines the CLI prints and fails
+  with the `no-rule-source` reason and how to declare a rule source; the
+  `inconclusive` output is `true`.
+- Coverage mode explains a gate that failed closed because coverlet did not
+  instrument a module (CLI 1.7.0's `uninstrumentedModules`). It used to say
+  "fix the failing tests" while every test passed and the comment advised
+  covering regions; the step, the check title (`Coverage incomplete: <n>
+  module(s) not instrumented`) and a "Modules not measured" table in the
+  comment now name each module and coverlet's reason, and the footer says
+  `fail-on-threshold` does not soften it.
 
 ## [1.11.0] - 2026-10-05
 

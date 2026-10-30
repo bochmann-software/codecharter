@@ -70566,6 +70566,11 @@ function formatDrift(drift) {
     return `${d.kind || "drift"}${rest ? ` (${rest})` : ""}`;
   });
 }
+function inconclusiveReasonsFromLog(output) {
+  if (!/^Inconclusive run:/m.test(output || "")) return null;
+  const codes = [...output.matchAll(/^\s+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
+  return [...new Set(codes)];
+}
 function isUsableReport(report) {
   return report !== null && typeof report === "object" && Array.isArray(report.violations);
 }
@@ -70757,8 +70762,36 @@ function coverageSummary(report) {
     // Summed once here so the comment and the badge payload read the same
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
-    diff
+    diff,
+    uninstrumented: uninstrumentedModules(report)
   };
+}
+function uninstrumentedModules(report) {
+  const modules = report && report.uninstrumentedModules;
+  if (!Array.isArray(modules)) return [];
+  return modules.filter((m) => m && typeof m === "object" && typeof m.module === "string").map((m) => ({
+    module: m.module,
+    projectFile: typeof m.projectFile === "string" ? m.projectFile : "",
+    reason: typeof m.reason === "string" ? m.reason : ""
+  }));
+}
+function uninstrumentedLines(summary2, workspace) {
+  const modules = summary2.uninstrumented;
+  if (modules.length === 0) return [];
+  const lines = [
+    `### Modules not measured (${modules.length})`,
+    "",
+    "Coverlet did not instrument these modules, so none of their lines reached the gate and it failed closed.",
+    "",
+    "| Module | Project | Reason |",
+    "|--------|---------|--------|"
+  ];
+  for (const m of modules) {
+    const project = displayPath(m.projectFile, workspace) || EM_DASH;
+    lines.push(`| ${escapeCell(m.module)} | ${escapeCell(project)} | ${escapeCell(m.reason || EM_DASH)} |`);
+  }
+  lines.push("");
+  return lines;
 }
 function meetsThreshold(covered, total, required) {
   if (total === 0) return true;
@@ -70886,7 +70919,11 @@ function buildCoverageComment(summary2, workspace, opts) {
       "_No coverage data was produced, so the gate could not be evaluated._"
     ].join("\n");
   }
-  const head = [...coverageHeadLines(summary2, heading), ...diffCoverageLines(summary2.diff, workspace, opts)];
+  const head = [
+    ...coverageHeadLines(summary2, heading),
+    ...uninstrumentedLines(summary2, workspace),
+    ...diffCoverageLines(summary2.diff, workspace, opts)
+  ];
   const tail = coverageRegionLines(summary2, workspace, opts);
   let markdown = "";
   for (const mode of TEST_TABLE_MODES) {
@@ -70989,6 +71026,9 @@ function coverageRegionLines(summary2, workspace, opts) {
   return lines;
 }
 function coverageFooterLine(summary2, failOnThreshold) {
+  if (summary2.uninstrumented.length > 0) {
+    return "_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._";
+  }
   const diff = summary2.diff;
   if (diff) {
     if (diff.met) {
@@ -71011,6 +71051,9 @@ function coverageConclusion(exitCode, failOnThreshold) {
   return "failure";
 }
 function coverageTitle(exitCode, summary2) {
+  if (exitCode === 2 && summary2.uninstrumented.length > 0) {
+    return `Coverage incomplete: ${summary2.uninstrumented.length} module(s) not instrumented`;
+  }
   if (exitCode === 2) return "Tests failed or coverage was incomplete";
   if (exitCode === 3) return "No coverage data";
   if (exitCode === 64) return "Coverage could not run (usage, config, or environment error)";
@@ -71312,6 +71355,13 @@ async function runCoverage(ctx) {
     }
     return;
   }
+  if (code === 2 && summary2.uninstrumented.length > 0) {
+    const names = summary2.uninstrumented.map((m) => m.reason ? `${m.module} (${m.reason})` : m.module).join("; ");
+    core.setFailed(
+      `The coverage gate failed closed: coverlet did not instrument ${summary2.uninstrumented.length} module(s) the run expected to measure, so their lines never reached the gate: ${names}. What to do: make sure each module's PDB sits next to it and its source paths exist on the runner (deterministic builds), then re-run; see \`uninstrumentedModules\` in the coverage report.`
+    );
+    return;
+  }
   if (code === 2) {
     core.setFailed(
       "The coverage run failed because tests failed or the coverage data was incomplete. What to do: fix the failing tests shown above; the gate only evaluates a complete run."
@@ -71560,6 +71610,8 @@ async function run() {
         await upsertComment(githubToken, commentMarker(discriminator), markdown);
       }
     }
+    const logReasons = report ? null : inconclusiveReasonsFromLog(output);
+    if (logReasons) core.setOutput("inconclusive", "true");
     if (code !== 0 || inconclusive || !report) {
       if (/Path to dotnet executable is not set|Microsoft\.Build\.Locator|MSBuildLocator/i.test(output)) {
         core.error(
@@ -71580,7 +71632,12 @@ See the action README, section "Requirements".`
 See the action README, section "Inputs".`
         );
       }
-      if (inconclusive) {
+      if (logReasons) {
+        const noSource = logReasons.includes("no-rule-source");
+        core.setFailed(
+          `CodeCharter's run was inconclusive (exit code ${code}): ${logReasons.length ? logReasons.join(", ") : "no reason was reported"}. The CLI wrote no report, so no check, comment or SARIF was produced. ` + (noSource ? "No rule source resolved, so nothing was checked. What to do: declare a `profiles:` or `rules:` entry in `.codecharter/config.yml`, or set the `rules` input." : "What to do: check the CodeCharter log above for the specific cause.") + ' See the action README, section "Rules resolution".'
+        );
+      } else if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(", ") : "no reason was reported";
         const driftDetail = formatDrift(reach.drift).join("; ");
         core.setFailed(
@@ -71649,6 +71706,7 @@ export {
   formatRuleSources,
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
+  inconclusiveReasonsFromLog,
   isMainModule,
   isPercentInput,
   locationLink,
@@ -71676,6 +71734,7 @@ export {
   testCountsFor,
   testTableRows,
   titleFor,
+  uninstrumentedModules,
   upsertComment,
   validateCoverageDiffInputs,
   verifySha,

@@ -1,0 +1,34 @@
+{
+  "summary": {
+    "totalLines": 0,
+    "coveredLines": 0,
+    "percent": 100,
+    "minimumRequiredPercent": 50,
+    "hasMetThreshold": false,
+    "minimumRequiredPercentSource": "cli-flag",
+    "unresolvedSourceFileCount": 0,
+    "coverageFilesOldestUtc": "2026-10-30T02:30:18.1596921Z",
+    "coverageFilesNewestUtc": "2026-10-30T02:30:18.1596921Z"
+  },
+  "testResults": [
+    {
+      "project": "Lib.Tests",
+      "exitCode": 0,
+      "succeeded": true,
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "failureReason": null
+    }
+  ],
+  "uncoveredRegions": [],
+  "diffCoverage": null,
+  "uninstrumentedModules": [
+    {
+      "module": "Lib",
+      "projectFile": "/home/runner/work/sample/sample/src/Lib/Lib.csproj",
+      "reason": null
+    }
+  ]
+}

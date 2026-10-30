@@ -115,6 +115,10 @@ Exit codes map onto the step result: coverage below the minimum fails unless
 `fail-on-threshold: false`, while failing tests, incomplete or missing coverage
 data and configuration errors always fail — the gate is fail-closed and never
 reports a pass it could not verify.
+A module coverlet did not instrument (CLI >= 1.7.0 lists it under
+`uninstrumentedModules`, typically a missing PDB) fails the gate the same way,
+even when every test passed: the comment names each such module in a "Modules
+not measured" table and the step says which ones never reached the gate.
 
 #### Gating only the changed lines
 
@@ -240,7 +244,10 @@ that ultimately failed to resolve at runtime (a stale `codecharter.lock.json`,
 a config pin drift, an unreachable portal, …) — something this pre-flight
 check cannot see ahead of time. Both can fire independently, for different
 reasons, and the action reports each with its own distinct message so an
-inconclusive run is never mistaken for "0 findings, gate satisfied".
+inconclusive run is never mistaken for "0 findings, gate satisfied". A run with
+no rule source at all writes no JSON report; the action reads the CLI's
+`Inconclusive run` lines from its log instead and fails with the
+`no-rule-source` reason rather than as a crash.
 
 ### Profiles (rule sets managed in the portal)
 
@@ -405,7 +412,7 @@ sending the numbers in the first place.
 | `findings-warn` | Number of warning-level findings |
 | `findings-info` | Number of info-level findings |
 | `sarif-path` | Path to the generated SARIF file, if `sarif-output` was set. Unset when the run is inconclusive (the file is removed) |
-| `inconclusive` | `"true"` when the run was inconclusive (the rule sources could not be established), `"false"` otherwise; empty when no report was produced |
+| `inconclusive` | `"true"` when the run was inconclusive (the rule sources could not be established), `"false"` otherwise; also `"true"` for a run without a report whose log names it inconclusive (no rule source at all), and empty for any other run without a report |
 | `coverage-percent` | Coverage mode: line-coverage percent; empty when no coverage data was produced |
 | `coverage-met` | Coverage mode: `"true"` when whole-solution coverage met the required minimum (only reported under a changed-lines gate) |
 | `coverage-uncovered-regions` | Coverage mode: number of uncovered regions in the report |

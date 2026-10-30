@@ -729,6 +729,20 @@ function formatDrift(drift) {
 }
 
 /**
+ * Reason codes of an inconclusive run that wrote no JSON report, read from the
+ * CLI's log, or null when the log does not name an inconclusive run. A run
+ * with no rule source at all exits 2 before it renders any output, so its
+ * report is missing; the CLI still prints the headline `Inconclusive run: ...`
+ * followed by one `  [<code>] <description>` line per reason on stderr.
+ * Annotation lines start with `::` and never match.
+ */
+function inconclusiveReasonsFromLog(output) {
+  if (!/^Inconclusive run:/m.test(output || '')) return null;
+  const codes = [...output.matchAll(/^\s+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
+  return [...new Set(codes)];
+}
+
+/**
  * True for a parsed report that has the `violations` array every CLI report
  * carries. Anything else (e.g. `{}`) is treated like a missing report, so it
  * can never be tallied into a passing "No findings" check.
@@ -980,7 +994,50 @@ function coverageSummary(report) {
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
     diff,
+    uninstrumented: uninstrumentedModules(report),
   };
+}
+
+/**
+ * The report's `uninstrumentedModules` (CLI >= 1.7.0): first-party modules the
+ * run expected to measure that coverlet never instrumented. Any entry makes the
+ * CLI fail the gate closed (exit code 2) even when every test passed, because
+ * the measured percentage lacks all of those modules' lines. Older reports do
+ * not carry the key and yield an empty list.
+ */
+function uninstrumentedModules(report) {
+  const modules = report && report.uninstrumentedModules;
+  if (!Array.isArray(modules)) return [];
+  return modules
+    .filter((m) => m && typeof m === 'object' && typeof m.module === 'string')
+    .map((m) => ({
+      module: m.module,
+      projectFile: typeof m.projectFile === 'string' ? m.projectFile : '',
+      reason: typeof m.reason === 'string' ? m.reason : '',
+    }));
+}
+
+/**
+ * The comment section naming the modules coverlet did not instrument, or
+ * nothing when every expected module was measured.
+ */
+function uninstrumentedLines(summary, workspace) {
+  const modules = summary.uninstrumented;
+  if (modules.length === 0) return [];
+  const lines = [
+    `### Modules not measured (${modules.length})`,
+    '',
+    'Coverlet did not instrument these modules, so none of their lines reached the gate and it failed closed.',
+    '',
+    '| Module | Project | Reason |',
+    '|--------|---------|--------|',
+  ];
+  for (const m of modules) {
+    const project = displayPath(m.projectFile, workspace) || EM_DASH;
+    lines.push(`| ${escapeCell(m.module)} | ${escapeCell(project)} | ${escapeCell(m.reason || EM_DASH)} |`);
+  }
+  lines.push('');
+  return lines;
 }
 
 /**
@@ -1213,7 +1270,11 @@ function buildCoverageComment(summary, workspace, opts) {
 
   // Everything around the test table is the same at every detail level, so it is
   // built once and only the table is re-rendered while looking for a fit.
-  const head = [...coverageHeadLines(summary, heading), ...diffCoverageLines(summary.diff, workspace, opts)];
+  const head = [
+    ...coverageHeadLines(summary, heading),
+    ...uninstrumentedLines(summary, workspace),
+    ...diffCoverageLines(summary.diff, workspace, opts),
+  ];
   const tail = coverageRegionLines(summary, workspace, opts);
 
   let markdown = '';
@@ -1357,6 +1418,9 @@ function coverageRegionLines(summary, workspace, opts) {
  * one ran, otherwise the whole-solution gate.
  */
 function coverageFooterLine(summary, failOnThreshold) {
+  if (summary.uninstrumented.length > 0) {
+    return '_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._';
+  }
   const diff = summary.diff;
   if (diff) {
     if (diff.met) {
@@ -1389,6 +1453,9 @@ function coverageConclusion(exitCode, failOnThreshold) {
 
 /** One-line check-run title for a coverage run, naming the gate that decided it. */
 function coverageTitle(exitCode, summary) {
+  if (exitCode === 2 && summary.uninstrumented.length > 0) {
+    return `Coverage incomplete: ${summary.uninstrumented.length} module(s) not instrumented`;
+  }
   if (exitCode === 2) return 'Tests failed or coverage was incomplete';
   if (exitCode === 3) return 'No coverage data';
   if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
@@ -1818,6 +1885,16 @@ async function runCoverage(ctx) {
     }
     return;
   }
+  if (code === 2 && summary.uninstrumented.length > 0) {
+    const names = summary.uninstrumented.map((m) => (m.reason ? `${m.module} (${m.reason})` : m.module)).join('; ');
+    core.setFailed(
+      `The coverage gate failed closed: coverlet did not instrument ${summary.uninstrumented.length} module(s) ` +
+        `the run expected to measure, so their lines never reached the gate: ${names}. ` +
+        "What to do: make sure each module's PDB sits next to it and its source paths exist on the runner " +
+        '(deterministic builds), then re-run; see `uninstrumentedModules` in the coverage report.'
+    );
+    return;
+  }
   if (code === 2) {
     core.setFailed(
       'The coverage run failed because tests failed or the coverage data was incomplete. ' +
@@ -2193,6 +2270,10 @@ async function run() {
 
     // An inconclusive report, or none usable, fails the step even on exit code 0; the
     // inconclusive case matches the failing check run it produced above.
+    // Without a report, the log still tells an inconclusive run (no rule
+    // source at all) apart from a crash.
+    const logReasons = report ? null : inconclusiveReasonsFromLog(output);
+    if (logReasons) core.setOutput('inconclusive', 'true');
     if (code !== 0 || inconclusive || !report) {
       if (/Path to dotnet executable is not set|Microsoft\.Build\.Locator|MSBuildLocator/i.test(output)) {
         core.error(
@@ -2223,7 +2304,19 @@ async function run() {
       // declared one failed to (stale lock, config pin drift, …). Report it as
       // its own failure mode, independent of `fail-on`/`fail-on: never`, so it
       // is never mistaken for "0 findings, gate satisfied".
-      if (inconclusive) {
+      if (logReasons) {
+        const noSource = logReasons.includes('no-rule-source');
+        core.setFailed(
+          `CodeCharter's run was inconclusive (exit code ${code}): ` +
+            `${logReasons.length ? logReasons.join(', ') : 'no reason was reported'}. The CLI wrote no report, so ` +
+            'no check, comment or SARIF was produced. ' +
+            (noSource
+              ? 'No rule source resolved, so nothing was checked. What to do: declare a `profiles:` or `rules:` ' +
+                'entry in `.codecharter/config.yml`, or set the `rules` input.'
+              : 'What to do: check the CodeCharter log above for the specific cause.') +
+            ' See the action README, section "Rules resolution".'
+        );
+      } else if (inconclusive) {
         const reasons = reach.reasons.length ? reach.reasons.join(', ') : 'no reason was reported';
         const driftDetail = formatDrift(reach.drift).join('; ');
         core.setFailed(
@@ -2325,6 +2418,7 @@ export {
   coverageFooterLine,
   coverageConclusion,
   coverageTitle,
+  uninstrumentedModules,
   isMainModule,
   commentMarker,
   resolvePlatform,
@@ -2338,6 +2432,7 @@ export {
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
   reachFromReport,
+  inconclusiveReasonsFromLog,
   formatRuleSources,
   formatDrift,
   resolveDiffArgs,
