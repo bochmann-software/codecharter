@@ -70225,6 +70225,49 @@ function findExecutable(root, isWindows2) {
   }
   return null;
 }
+var CLI_COMPLETE_MARKER = ".codecharter-complete";
+var PUBLISH_ATTEMPTS = 3;
+function completeExecutable(dir, isWindows2) {
+  if (!fs10.existsSync(path14.join(dir, CLI_COMPLETE_MARKER))) return null;
+  return findExecutable(dir, isWindows2);
+}
+function siblingPath(dir, label) {
+  return `${dir}.${label}-${process.pid}-${crypto5.randomBytes(4).toString("hex")}`;
+}
+function tryRename(from, to) {
+  try {
+    fs10.renameSync(from, to);
+    return true;
+  } catch (err) {
+    core.debug(`Could not rename ${from} to ${to}: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+}
+async function publishCli(stagingDir, cliDir, isWindows2) {
+  for (let attempt = 0; attempt < PUBLISH_ATTEMPTS; attempt++) {
+    if (tryRename(stagingDir, cliDir)) return findExecutable(cliDir, isWindows2);
+    const winner = completeExecutable(cliDir, isWindows2);
+    if (winner) {
+      core.info("Another job installed this CodeCharter CLI version first; using its copy.");
+      await io.rmRF(stagingDir);
+      return winner;
+    }
+    const aside = siblingPath(cliDir, "stale");
+    if (!tryRename(cliDir, aside)) {
+      if (!fs10.existsSync(cliDir)) continue;
+      break;
+    }
+    try {
+      await io.rmRF(aside);
+    } catch (err) {
+      core.debug(`Could not remove the stale CLI copy ${aside}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  core.warning(
+    `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be replaced, most likely because a job installed by an older action version is still running from it. This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. What to do: delete that folder once no job uses it, so later runs share one copy again.`
+  );
+  return findExecutable(stagingDir, isWindows2);
+}
 function discoverSolutions(workspace) {
   const skip = /* @__PURE__ */ new Set(["node_modules", "bin", "obj", ".git"]);
   const solutions = [];
@@ -71094,6 +71137,13 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
   }
   const cliDir = path14.join(cacheBase, "codecharter-cli", platform3, keyVersion);
   const cacheKey = `codecharter-cli-${platform3}-${keyVersion}`;
+  if (cacheEnabled) {
+    const installed = completeExecutable(cliDir, isWindows2);
+    if (installed) {
+      core.info(`Using the CodeCharter CLI from the tool cache (${platform3}, ${keyVersion}).`);
+      return installed;
+    }
+  }
   let canCache = cacheEnabled && cache.isFeatureAvailable();
   if (cacheEnabled && !canCache) {
     core.debug("Actions cache service is not available; downloading without cache.");
@@ -71107,39 +71157,60 @@ async function obtainCli({ portal, platform: platform3, version: version3, apiKe
       );
     }
   }
-  await io.rmRF(cliDir);
-  await io.mkdirP(cliDir);
+  let installDir = path14.join(tmp, "cli");
+  if (cacheEnabled) {
+    await io.mkdirP(path14.dirname(cliDir));
+    installDir = siblingPath(cliDir, "staging");
+  }
+  await io.mkdirP(installDir);
+  const transitDir = path14.join(process.env.RUNNER_TEMP || tmp, "codecharter-cli", platform3, keyVersion);
+  let fromCache = false;
   if (canCache) {
+    await io.rmRF(transitDir);
+    await io.mkdirP(transitDir);
     try {
-      if (await cache.restoreCache([cliDir], cacheKey)) {
-        const cached = findExecutable(cliDir, isWindows2);
-        if (cached) {
-          if (!isWindows2) fs10.chmodSync(cached, 493);
-          core.info(`Using cached CodeCharter CLI (${platform3}, ${keyVersion}).`);
-          return cached;
-        }
+      if (await cache.restoreCache([transitDir], cacheKey) && findExecutable(transitDir, isWindows2)) {
+        fromCache = true;
+        core.info(`Using cached CodeCharter CLI (${platform3}, ${keyVersion}).`);
       }
     } catch (err) {
       core.debug(`Cache restore skipped: ${err instanceof Error ? err.message : err}`);
     }
   }
-  core.info(`Downloading CodeCharter CLI (${platform3}, ${downloadVersion}) from ${portal}`);
-  const url2 = `${portal}/api/v1/cli/${platform3}/${downloadVersion}`;
-  const { archive, expectedSha } = await downloadArchive(url2, apiKey, tmp, isWindows2);
-  await verifySha(archive, manifestSha || expectedSha);
-  if (isWindows2) {
-    await tc.extractZip(archive, cliDir);
-  } else {
-    await tc.extractTar(archive, cliDir);
+  if (!fromCache) {
+    core.info(`Downloading CodeCharter CLI (${platform3}, ${downloadVersion}) from ${portal}`);
+    const url2 = `${portal}/api/v1/cli/${platform3}/${downloadVersion}`;
+    const { archive, expectedSha } = await downloadArchive(url2, apiKey, tmp, isWindows2);
+    await verifySha(archive, manifestSha || expectedSha);
+    const extractDir = canCache ? transitDir : installDir;
+    if (canCache) {
+      await io.rmRF(transitDir);
+      await io.mkdirP(transitDir);
+    }
+    if (isWindows2) {
+      await tc.extractZip(archive, extractDir);
+    } else {
+      await tc.extractTar(archive, extractDir);
+    }
+    if (!findExecutable(extractDir, isWindows2)) {
+      await io.rmRF(installDir);
+      throw new Error("Extracted archive does not contain a codecharter executable.");
+    }
   }
-  const exe = findExecutable(cliDir, isWindows2);
-  if (!exe) {
-    throw new Error("Extracted archive does not contain a codecharter executable.");
+  if (canCache) fs10.cpSync(transitDir, installDir, { recursive: true });
+  const staged = findExecutable(installDir, isWindows2);
+  if (!isWindows2) fs10.chmodSync(staged, 493);
+  let exe = staged;
+  if (cacheEnabled) {
+    fs10.writeFileSync(
+      path14.join(installDir, CLI_COMPLETE_MARKER),
+      JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: (/* @__PURE__ */ new Date()).toISOString() })
+    );
+    exe = await publishCli(installDir, cliDir, isWindows2);
   }
-  if (!isWindows2) fs10.chmodSync(exe, 493);
-  if (canCache) {
+  if (canCache && !fromCache) {
     try {
-      await cache.saveCache([cliDir], cacheKey);
+      await cache.saveCache([transitDir], cacheKey);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/reserve|already exists|already been/i.test(msg)) {
@@ -71548,6 +71619,7 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   run().catch((err) => core.setFailed(err instanceof Error ? err.message : String(err)));
 }
 export {
+  CLI_COMPLETE_MARKER,
   MAX_COMMENT_CHARS,
   MAX_COMMENT_ROWS,
   PLATFORMS,
@@ -71556,6 +71628,7 @@ export {
   buildComment,
   buildCoverageComment,
   commentMarker,
+  completeExecutable,
   conclusionFor,
   coverageBadgePayload,
   coverageConclusion,
@@ -71584,6 +71657,7 @@ export {
   obtainCli,
   projectFailed,
   projectResultCell,
+  publishCli,
   publishViaPortal,
   reachFromReport,
   readJson,

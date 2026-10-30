@@ -7,6 +7,25 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Fixed
+
+- Several self-hosted runners sharing one tool cache no longer break each
+  other's CLI install. The action used to delete and re-extract the cached
+  version folder on every run, so a job could hit `EPERM ... unlink
+  codecharter.dll` while another job's CLI was running from it, and leave the
+  folder half-extracted for the next job ("The coverage run could not start").
+  A complete cached version (marked by a `.codecharter-complete` file written
+  last) is now reused as-is and never rewritten; a new copy is extracted into
+  a per-run staging folder next to it and moved into place with one atomic
+  rename. A job that loses that race uses the copy the other job published.
+  A folder without the marker (half-extracted, or installed in place by an
+  older action version) is never run: it is replaced, or, while a job still
+  runs from it, this run uses its own staging copy and warns. The Actions
+  cache entry is now restored into a runner-local folder under `RUNNER_TEMP`,
+  so the first run after upgrading downloads the CLI once more. With
+  `cache: false` the CLI is downloaded into the run's temp folder and the tool
+  cache is not touched.
+
 ## [1.11.0] - 2026-10-05
 
 ### Added

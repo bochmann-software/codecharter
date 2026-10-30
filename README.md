@@ -473,7 +473,14 @@ immediately (no daily delay); exact pins (e.g. `1.4.2`) are cached indefinitely
 without any lookup. If the portal does not support the lookup (older
 deployment), the action falls back to a per-day key. Only the generic binary is
 cached — the short-lived license is never cached. On runners without an Actions
-cache service the action simply downloads each run.
+cache service the action downloads the CLI unless the runner's tool cache
+already holds that version.
+
+The CLI is installed into the runner's tool cache (`RUNNER_TOOL_CACHE`), which
+several self-hosted runners on one machine may share. A complete version there
+is reused as-is and never rewritten while another job may be running it: each
+new install is extracted into its own staging folder and moved into place
+atomically, so concurrent jobs never see a half-extracted CLI.
 
 It is a JavaScript action that runs on the runner's bundled Node.js, so there
 is nothing to install: no Docker container, no container registry, and no

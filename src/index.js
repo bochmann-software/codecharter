@@ -143,6 +143,84 @@ function findExecutable(root, isWindows) {
 }
 
 /**
+ * Marker file written last into a CLI copy in the tool cache. Its presence
+ * means the copy is complete: an extraction that crashed half-way, or one an
+ * older action version did in place, has no marker and is never run.
+ */
+const CLI_COMPLETE_MARKER = '.codecharter-complete';
+
+/** How often a lost publish is retried before running from the staging copy. */
+const PUBLISH_ATTEMPTS = 3;
+
+/** Returns the executable of a complete (marker-carrying) CLI copy, or null. */
+function completeExecutable(dir, isWindows) {
+  if (!fs.existsSync(path.join(dir, CLI_COMPLETE_MARKER))) return null;
+  return findExecutable(dir, isWindows);
+}
+
+/** A unique sibling path of `dir`, on the same volume so a rename is atomic. */
+function siblingPath(dir, label) {
+  return `${dir}.${label}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+/** Renames a directory, reporting failure instead of throwing. */
+function tryRename(from, to) {
+  try {
+    fs.renameSync(from, to);
+    return true;
+  } catch (err) {
+    core.debug(`Could not rename ${from} to ${to}: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+}
+
+/**
+ * Moves a complete staging copy into the versioned tool-cache directory with
+ * one atomic rename, so a concurrent job never sees a half-written version and
+ * a copy another job is running from is never rewritten. Several self-hosted
+ * runners can share one tool cache:
+ *   - when another job published the same version first, its copy is used and
+ *     the staging copy is discarded;
+ *   - an unmarked leftover at the target (half-extracted, or installed in place
+ *     by an older action version) is moved aside and replaced;
+ *   - when the leftover cannot be moved (Windows refuses while a job runs from
+ *     it), this job runs from its own staging copy and the leftover stays.
+ * Returns the executable to run.
+ */
+async function publishCli(stagingDir, cliDir, isWindows) {
+  for (let attempt = 0; attempt < PUBLISH_ATTEMPTS; attempt++) {
+    if (tryRename(stagingDir, cliDir)) return findExecutable(cliDir, isWindows);
+
+    const winner = completeExecutable(cliDir, isWindows);
+    if (winner) {
+      core.info('Another job installed this CodeCharter CLI version first; using its copy.');
+      await io.rmRF(stagingDir);
+      return winner;
+    }
+
+    const aside = siblingPath(cliDir, 'stale');
+    if (!tryRename(cliDir, aside)) {
+      // Gone in the meantime (another job cleared it): just try again.
+      if (!fs.existsSync(cliDir)) continue;
+      break;
+    }
+    try {
+      await io.rmRF(aside);
+    } catch (err) {
+      core.debug(`Could not remove the stale CLI copy ${aside}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  core.warning(
+    `The tool cache holds a CodeCharter CLI copy without a completion marker at ${cliDir} that cannot be ` +
+      'replaced, most likely because a job installed by an older action version is still running from it. ' +
+      `This run uses its own copy at ${stagingDir} instead, which does not affect the analysis. ` +
+      'What to do: delete that folder once no job uses it, so later runs share one copy again.'
+  );
+  return findExecutable(stagingDir, isWindows);
+}
+
+/**
  * Walks the workspace for project files when no `solution` input is given.
  * Returns workspace-relative paths, ordered shallowest-directory-first then
  * alphabetically, so the choice is deterministic regardless of filesystem
@@ -1453,6 +1531,14 @@ async function fetchManifest(portal, platform, version, apiKey) {
  * holds only the generic binary — the minted license lives elsewhere and is
  * never cached. Caching is best-effort: any cache error falls back to a fresh
  * download, so it never breaks a run.
+ *
+ * With caching on, the CLI lives in the runner's tool cache, which several
+ * self-hosted runners on one machine may share. A complete copy there (see
+ * CLI_COMPLETE_MARKER) is reused as-is and never rewritten; a new copy is
+ * assembled in a per-run staging directory and published by publishCli. The
+ * Actions cache entry is restored into and saved from a runner-local transit
+ * directory, never from the shared tool cache. With `cache: false` the CLI is
+ * downloaded into the run's own temp directory and the tool cache is untouched.
  */
 async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, cacheEnabled }) {
   const cacheBase = process.env.RUNNER_TOOL_CACHE || path.join(os.homedir() || tmp, '.codecharter');
@@ -1489,6 +1575,17 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
   const cliDir = path.join(cacheBase, 'codecharter-cli', platform, keyVersion);
   const cacheKey = `codecharter-cli-${platform}-${keyVersion}`;
 
+  // A complete copy in the tool cache (this runner's, or one another runner on
+  // the same machine shares) is used as-is: rewriting it would break any job
+  // running from it right now.
+  if (cacheEnabled) {
+    const installed = completeExecutable(cliDir, isWindows);
+    if (installed) {
+      core.info(`Using the CodeCharter CLI from the tool cache (${platform}, ${keyVersion}).`);
+      return installed;
+    }
+  }
+
   // Only use the cache when the Actions cache service is actually reachable;
   // on runners without it, isFeatureAvailable() is false and we skip quietly
   // instead of emitting the library's restore/save warnings every run.
@@ -1514,48 +1611,75 @@ async function obtainCli({ portal, platform, version, apiKey, isWindows, tmp, ca
     }
   }
 
-  // Start clean so a stale local copy (persistent self-hosted runner) cannot
-  // shadow a cache miss.
-  await io.rmRF(cliDir);
-  await io.mkdirP(cliDir);
+  // The copy this run assembles: a fresh staging sibling of the versioned
+  // tool-cache directory (published atomically below), or with `cache: false`
+  // a directory of this run's own that nothing else ever sees.
+  let installDir = path.join(tmp, 'cli');
+  if (cacheEnabled) {
+    await io.mkdirP(path.dirname(cliDir));
+    installDir = siblingPath(cliDir, 'staging');
+  }
+  await io.mkdirP(installDir);
 
+  // The Actions cache restores into, and saves from, the path it was given, so
+  // that path must stay stable across runs yet belong to this runner alone.
+  const transitDir = path.join(process.env.RUNNER_TEMP || tmp, 'codecharter-cli', platform, keyVersion);
+  let fromCache = false;
   if (canCache) {
+    await io.rmRF(transitDir);
+    await io.mkdirP(transitDir);
     try {
-      if (await cache.restoreCache([cliDir], cacheKey)) {
-        const cached = findExecutable(cliDir, isWindows);
-        if (cached) {
-          if (!isWindows) fs.chmodSync(cached, 0o755);
-          core.info(`Using cached CodeCharter CLI (${platform}, ${keyVersion}).`);
-          return cached;
-        }
+      if ((await cache.restoreCache([transitDir], cacheKey)) && findExecutable(transitDir, isWindows)) {
+        fromCache = true;
+        core.info(`Using cached CodeCharter CLI (${platform}, ${keyVersion}).`);
       }
     } catch (err) {
       core.debug(`Cache restore skipped: ${err instanceof Error ? err.message : err}`);
     }
   }
 
-  core.info(`Downloading CodeCharter CLI (${platform}, ${downloadVersion}) from ${portal}`);
-  const url = `${portal}/api/v1/cli/${platform}/${downloadVersion}`;
-  const { archive, expectedSha } = await downloadArchive(url, apiKey, tmp, isWindows);
-  // Prefer the manifest's SHA-256 when we resolved one: it pins the cached
-  // artifact to the exact version the cache key names. Otherwise trust the
-  // download's own X-CodeCharter-Sha256 header.
-  await verifySha(archive, manifestSha || expectedSha);
-  if (isWindows) {
-    await tc.extractZip(archive, cliDir);
-  } else {
-    await tc.extractTar(archive, cliDir);
+  if (!fromCache) {
+    core.info(`Downloading CodeCharter CLI (${platform}, ${downloadVersion}) from ${portal}`);
+    const url = `${portal}/api/v1/cli/${platform}/${downloadVersion}`;
+    const { archive, expectedSha } = await downloadArchive(url, apiKey, tmp, isWindows);
+    // Prefer the manifest's SHA-256 when we resolved one: it pins the cached
+    // artifact to the exact version the cache key names. Otherwise trust the
+    // download's own X-CodeCharter-Sha256 header.
+    await verifySha(archive, manifestSha || expectedSha);
+    const extractDir = canCache ? transitDir : installDir;
+    if (canCache) {
+      // Drop whatever a failed restore may have left behind.
+      await io.rmRF(transitDir);
+      await io.mkdirP(transitDir);
+    }
+    if (isWindows) {
+      await tc.extractZip(archive, extractDir);
+    } else {
+      await tc.extractTar(archive, extractDir);
+    }
+    if (!findExecutable(extractDir, isWindows)) {
+      await io.rmRF(installDir);
+      throw new Error('Extracted archive does not contain a codecharter executable.');
+    }
+  }
+  if (canCache) fs.cpSync(transitDir, installDir, { recursive: true });
+
+  const staged = findExecutable(installDir, isWindows);
+  if (!isWindows) fs.chmodSync(staged, 0o755);
+
+  let exe = staged;
+  if (cacheEnabled) {
+    // Written last: only a copy carrying the marker is ever reused.
+    fs.writeFileSync(
+      path.join(installDir, CLI_COMPLETE_MARKER),
+      JSON.stringify({ version: keyVersion, sha256: manifestSha, completedAt: new Date().toISOString() })
+    );
+    exe = await publishCli(installDir, cliDir, isWindows);
   }
 
-  const exe = findExecutable(cliDir, isWindows);
-  if (!exe) {
-    throw new Error('Extracted archive does not contain a codecharter executable.');
-  }
-  if (!isWindows) fs.chmodSync(exe, 0o755);
-
-  if (canCache) {
+  if (canCache && !fromCache) {
     try {
-      await cache.saveCache([cliDir], cacheKey);
+      await cache.saveCache([transitDir], cacheKey);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/reserve|already exists|already been/i.test(msg)) {
@@ -2207,6 +2331,9 @@ export {
   downloadArchive,
   verifySha,
   findExecutable,
+  completeExecutable,
+  publishCli,
+  CLI_COMPLETE_MARKER,
   discoverSolutions,
   hasConfiguredProfiles,
   hasConfiguredRulesKey,
