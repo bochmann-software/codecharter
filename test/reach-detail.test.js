@@ -158,6 +158,14 @@ test('configErrorsFromLog_WhenTheLogRepeatsErrors_ReturnsEachOnceWithItsFile', (
   assert.deepEqual(configErrorsFromLog(undefined), []);
 });
 
+test('configErrorsFromLog_WhenALineRepeatsColonSeparatedParts_ReturnsQuicklyWithTheFirstPartAsFile', () => {
+  const long = 'Config error in a: ' + 'a: a'.repeat(50000) + ' '.repeat(50000) + 'x';
+  const errors = configErrorsFromLog(long);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].file, 'a');
+  assert.deepEqual(configErrorsFromLog('Config error in : no file\nConfig error in onlyfile:\n'), []);
+});
+
 // A real CLI 1.7.0 report: the sample library references a project file that
 // does not exist (German MSBuild messages, as the runner's locale emitted them).
 test('reachFromReport_WhenGivenARealCli170ProjectLoadFailure_NamesEachProject', () => {

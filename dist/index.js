@@ -70724,14 +70724,22 @@ function inconclusiveReasonsFromLog(output) {
   const codes = [...output.matchAll(/^[ \t]+\[([a-z0-9-]+)\]/gm)].map((m) => m[1]);
   return [...new Set(codes)];
 }
+var CONFIG_ERROR_PREFIX = "Config error in ";
 function configErrorsFromLog(output) {
   const seen = /* @__PURE__ */ new Set();
   const errors = [];
-  for (const m of (output || "").matchAll(/^Config error in (.+?): (.+?)\s*$/gm)) {
-    const line = `${m[1].trim()}: ${m[2].trim()}`;
+  for (const raw of (output || "").split("\n")) {
+    if (!raw.startsWith(CONFIG_ERROR_PREFIX)) continue;
+    const rest = raw.slice(CONFIG_ERROR_PREFIX.length);
+    const separator = rest.indexOf(": ", 1);
+    if (separator < 0) continue;
+    const file = rest.slice(0, separator).trim();
+    const error2 = rest.slice(separator + 2).trim();
+    if (!file || !error2) continue;
+    const line = `${file}: ${error2}`;
     if (seen.has(line)) continue;
     seen.add(line);
-    errors.push({ file: m[1].trim(), error: m[2].trim() });
+    errors.push({ file, error: error2 });
   }
   return errors;
 }

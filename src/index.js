@@ -993,6 +993,8 @@ function inconclusiveReasonsFromLog(output) {
   return [...new Set(codes)];
 }
 
+const CONFIG_ERROR_PREFIX = 'Config error in ';
+
 /**
  * The CLI's config errors from its log (`Config error in <file>: <error>`),
  * each once, for a run that exited 10 (invalid config) without a report.
@@ -1002,11 +1004,20 @@ function inconclusiveReasonsFromLog(output) {
 function configErrorsFromLog(output) {
   const seen = new Set();
   const errors = [];
-  for (const m of (output || '').matchAll(/^Config error in (.+?): (.+?)\s*$/gm)) {
-    const line = `${m[1].trim()}: ${m[2].trim()}`;
+  // Plain string scanning: a regular expression with two lazy groups backtracks
+  // polynomially on a long line of repeated `a: a`.
+  for (const raw of (output || '').split('\n')) {
+    if (!raw.startsWith(CONFIG_ERROR_PREFIX)) continue;
+    const rest = raw.slice(CONFIG_ERROR_PREFIX.length);
+    const separator = rest.indexOf(': ', 1);
+    if (separator < 0) continue;
+    const file = rest.slice(0, separator).trim();
+    const error = rest.slice(separator + 2).trim();
+    if (!file || !error) continue;
+    const line = `${file}: ${error}`;
     if (seen.has(line)) continue;
     seen.add(line);
-    errors.push({ file: m[1].trim(), error: m[2].trim() });
+    errors.push({ file, error });
   }
   return errors;
 }
