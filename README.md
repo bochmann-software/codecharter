@@ -114,8 +114,8 @@ still not enough only the totals row remains.
 When tests fail (CLI v1.7.0 and newer), a **Failed tests** section follows the
 table: each failing project with its failed tests, and per test the assertion
 message and stack trace in a collapsed block, shown as literal text. At most 20
-failed tests are listed, with a note counting the rest (the job log lists all of
-them). To stay within GitHub's size limit the stack traces drop first, then the
+failed tests are listed, with a note counting the rest, every failed row of a
+data-driven test included (the job log lists all of them). To stay within GitHub's size limit the stack traces drop first, then the
 passing table rows, then the messages, leaving the failed test names.
 
 Exit codes map onto the step result: coverage below the minimum fails unless

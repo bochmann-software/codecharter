@@ -155,6 +155,18 @@ test('failedTestLines: lists at most MAX_FAILED_TESTS_SHOWN tests and counts the
   );
 });
 
+test('failedTestLines: counts the rest against the CLI total when it reports one', () => {
+  // A data-driven test whose 12 rows failed: the counter says 1, the total 12.
+  const rows = Array.from({ length: 10 }, (_, i) => failedTest(`Rows(${i})`));
+  const withTotal = failedTestLines([failing('A.Tests', rows, { failed: 1, failedTestCount: 12 })]).join('\n');
+  assert.match(withTotal, /_… 2 more failed test\(s\) not shown; the job log lists them\._/);
+
+  const withoutCounters = failedTestLines([
+    failing('A.Tests', rows.slice(0, 2), { failed: undefined, failedTestCount: undefined }),
+  ]).join('\n');
+  assert.doesNotMatch(withoutCounters, /more failed test/, 'the listed tests are all there is');
+});
+
 test('boundFailedTestDetail: cuts long text and says so', () => {
   assert.equal(boundFailedTestDetail(undefined), '');
   assert.equal(boundFailedTestDetail('  a\r\nb  '), 'a\nb');

@@ -71103,7 +71103,7 @@ function failedTestLines(projects, mode = "full") {
   for (const project of failing) {
     const tests = failedTestsOf(project);
     const listed = tests.slice(0, Math.max(0, MAX_FAILED_TESTS_SHOWN - shown));
-    const reported = Number.isFinite(project.failed) ? Math.max(project.failed, tests.length) : tests.length;
+    const reported = Math.max(failedTestTotalOf(project), tests.length);
     notShown += reported - listed.length;
     if (listed.length === 0) continue;
     shown += listed.length;
@@ -71115,6 +71115,10 @@ function failedTestLines(projects, mode = "full") {
     lines.push(`_\u2026 ${notShown} more failed test(s) not shown; the job log lists them._`, "");
   }
   return lines;
+}
+function failedTestTotalOf(project) {
+  if (Number.isFinite(project.failedTestCount)) return project.failedTestCount;
+  return Number.isFinite(project.failed) ? project.failed : 0;
 }
 function floorPercent(percent) {
   return Math.floor(Number((percent * 100).toFixed(6))) / 100;

@@ -1574,7 +1574,7 @@ function failedTestLines(projects, mode = 'full') {
   for (const project of failing) {
     const tests = failedTestsOf(project);
     const listed = tests.slice(0, Math.max(0, MAX_FAILED_TESTS_SHOWN - shown));
-    const reported = Number.isFinite(project.failed) ? Math.max(project.failed, tests.length) : tests.length;
+    const reported = Math.max(failedTestTotalOf(project), tests.length);
     notShown += reported - listed.length;
     if (listed.length === 0) continue;
     shown += listed.length;
@@ -1586,6 +1586,17 @@ function failedTestLines(projects, mode = 'full') {
     lines.push(`_… ${notShown} more failed test(s) not shown; the job log lists them._`, '');
   }
   return lines;
+}
+
+/**
+ * How many tests of a project failed in all. The CLI's `failedTestCount`
+ * (>= 1.7.0) counts every failed row of a data-driven test, like the listed
+ * `failedTests`; the `failed` counter counts such a test once, so it is only
+ * the fallback for reports without the total. 0 when neither is a number.
+ */
+function failedTestTotalOf(project) {
+  if (Number.isFinite(project.failedTestCount)) return project.failedTestCount;
+  return Number.isFinite(project.failed) ? project.failed : 0;
 }
 
 /**
