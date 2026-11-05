@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   boundFailedTestDetail,
+  boundFailedTestName,
   buildCoverageComment,
   codeBlock,
   coverageSummary,
@@ -205,4 +206,23 @@ test('buildCoverageComment: when even the messages do not fit, the names remain'
   assert.ok(md.length <= MAX_COMMENT_CHARS, `expected the report to fit the budget, got ${md.length}`);
   assert.match(md, /^- ❌ P0\.T0$/m, 'the failed test names survive');
   assert.doesNotMatch(md, /<details>/);
+});
+
+test('boundFailedTestDetail: a cut never splits a surrogate pair', () => {
+  const text = `${'x'.repeat(1999)}\u{1F600}tail`;
+  assert.equal(boundFailedTestDetail(text), `${'x'.repeat(1999)}\n… (truncated)`);
+});
+
+test('boundFailedTestName: bounds a long name, keeps a short one, names a missing one', () => {
+  assert.equal(boundFailedTestName('  A.Fails  '), 'A.Fails');
+  assert.equal(boundFailedTestName(undefined), '(unnamed test)');
+  assert.equal(boundFailedTestName('n'.repeat(400)), `${'n'.repeat(300)} … (truncated)`);
+  assert.equal(boundFailedTestName(`${'n'.repeat(299)}\u{1F600}`), `${'n'.repeat(299)} … (truncated)`);
+});
+
+test('failedTestLines: a long name stays bounded in the list', () => {
+  const md = failedTestLines([failing('A.Tests', [failedTest(`A.Rows(${'x'.repeat(5000)})`)])], 'names').join('\n');
+  const item = md.split('\n').find((line) => line.startsWith('- ❌ '));
+  assert.ok(item.length < 400, `expected a bounded name, got ${item.length} characters`);
+  assert.match(item, /… \(truncated\)$/);
 });

@@ -1475,6 +1475,29 @@ const MAX_FAILED_TEST_DETAIL_LINES = 20;
 /** ...and at most this many characters. */
 const MAX_FAILED_TEST_DETAIL_CHARS = 2000;
 
+/** A failed test's name keeps at most this many characters. */
+const MAX_FAILED_TEST_NAME_CHARS = 300;
+
+/**
+ * The first `length` UTF-16 units of `text`, one fewer when the cut would
+ * leave the high half of a surrogate pair (an emoji, say) without its low half.
+ */
+function cutText(text, length) {
+  const code = text.charCodeAt(length - 1);
+  return code >= 0xd800 && code <= 0xdbff ? text.slice(0, length - 1) : text.slice(0, length);
+}
+
+/**
+ * A failed test's name, bounded: a name longer than
+ * MAX_FAILED_TEST_NAME_CHARS (a data-driven name carrying a long argument) is
+ * cut with a note. Escaping, which also collapses line breaks, is the caller's.
+ */
+function boundFailedTestName(value) {
+  const name = typeof value === 'string' ? value.trim() : '';
+  if (!name) return '(unnamed test)';
+  return name.length > MAX_FAILED_TEST_NAME_CHARS ? `${cutText(name, MAX_FAILED_TEST_NAME_CHARS)} … (truncated)` : name;
+}
+
 /**
  * The failed tests a project's report entry carries (CLI >= 1.7.0:
  * `testResults[].failedTests`, each with `name`, `message` and `stackTrace`).
@@ -1497,7 +1520,7 @@ function boundFailedTestDetail(value) {
   let kept = lines.slice(0, MAX_FAILED_TEST_DETAIL_LINES).join('\n');
   let cut = lines.length > MAX_FAILED_TEST_DETAIL_LINES;
   if (kept.length > MAX_FAILED_TEST_DETAIL_CHARS) {
-    kept = kept.slice(0, MAX_FAILED_TEST_DETAIL_CHARS);
+    kept = cutText(kept, MAX_FAILED_TEST_DETAIL_CHARS);
     cut = true;
   }
   return cut ? `${kept}\n… (truncated)` : kept;
@@ -1520,7 +1543,7 @@ function codeBlock(text) {
  * its message (and with `full` its stack trace) in a collapsed block.
  */
 function failedTestEntry(failedTest, mode) {
-  const item = `- ❌ ${escapeInline(failedTest.name || '(unnamed test)')}`;
+  const item = `- ❌ ${escapeInline(boundFailedTestName(failedTest.name))}`;
   if (mode === 'names') return [item];
   const message = boundFailedTestDetail(failedTest.message);
   const stackTrace = mode === 'full' ? boundFailedTestDetail(failedTest.stackTrace) : '';
@@ -2839,6 +2862,7 @@ export {
   testTableRows,
   failedTestLines,
   boundFailedTestDetail,
+  boundFailedTestName,
   codeBlock,
   MAX_FAILED_TESTS_SHOWN,
   projectFailed,

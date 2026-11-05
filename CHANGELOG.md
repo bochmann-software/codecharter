@@ -12,8 +12,8 @@ the latest release in its line.
 - A coverage run with failing tests now shows why they failed. The job
   summary, the PR comment and the check run list each failed test with its
   assertion message and stack trace (from CLI v1.7.0 and newer), instead of
-  only marking the project as failed. At most 20 tests are listed, and the
-  detail shrinks to fit GitHub's size limit.
+  only marking the project as failed. At most 20 tests are listed, long test
+  names are shortened, and the detail shrinks to fit GitHub's size limit.
 - Several self-hosted runners sharing one tool cache no longer break each
   other's CLI install. The action used to delete and re-extract the cached
   version folder on every run, so a job could hit `EPERM ... unlink

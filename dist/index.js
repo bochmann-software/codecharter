@@ -71050,6 +71050,16 @@ function testTableRows(projects, counts, mode = "full") {
 var MAX_FAILED_TESTS_SHOWN = 20;
 var MAX_FAILED_TEST_DETAIL_LINES = 20;
 var MAX_FAILED_TEST_DETAIL_CHARS = 2e3;
+var MAX_FAILED_TEST_NAME_CHARS = 300;
+function cutText(text2, length) {
+  const code = text2.charCodeAt(length - 1);
+  return code >= 55296 && code <= 56319 ? text2.slice(0, length - 1) : text2.slice(0, length);
+}
+function boundFailedTestName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name) return "(unnamed test)";
+  return name.length > MAX_FAILED_TEST_NAME_CHARS ? `${cutText(name, MAX_FAILED_TEST_NAME_CHARS)} \u2026 (truncated)` : name;
+}
 function failedTestsOf(project) {
   const tests = project && Array.isArray(project.failedTests) ? project.failedTests : [];
   return tests.filter((t) => t && typeof t === "object");
@@ -71061,7 +71071,7 @@ function boundFailedTestDetail(value) {
   let kept = lines.slice(0, MAX_FAILED_TEST_DETAIL_LINES).join("\n");
   let cut = lines.length > MAX_FAILED_TEST_DETAIL_LINES;
   if (kept.length > MAX_FAILED_TEST_DETAIL_CHARS) {
-    kept = kept.slice(0, MAX_FAILED_TEST_DETAIL_CHARS);
+    kept = cutText(kept, MAX_FAILED_TEST_DETAIL_CHARS);
     cut = true;
   }
   return cut ? `${kept}
@@ -71073,7 +71083,7 @@ function codeBlock(text2) {
   return [`${fence}text`, text2, fence];
 }
 function failedTestEntry(failedTest, mode) {
-  const item = `- \u274C ${escapeInline(failedTest.name || "(unnamed test)")}`;
+  const item = `- \u274C ${escapeInline(boundFailedTestName(failedTest.name))}`;
   if (mode === "names") return [item];
   const message = boundFailedTestDetail(failedTest.message);
   const stackTrace = mode === "full" ? boundFailedTestDetail(failedTest.stackTrace) : "";
@@ -71947,6 +71957,7 @@ export {
   PLATFORMS,
   analysisBadgePayload,
   boundFailedTestDetail,
+  boundFailedTestName,
   buildBadgePayload,
   buildComment,
   buildCoverageComment,
