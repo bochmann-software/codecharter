@@ -1466,6 +1466,105 @@ function testTableRows(projects, counts, mode = 'full') {
   return [...rows, ...notes, ''];
 }
 
+/** Failed tests listed across all projects, at most; the rest are counted in a note. */
+const MAX_FAILED_TESTS_SHOWN = 20;
+
+/** A failed test's message or stack trace keeps at most this many lines... */
+const MAX_FAILED_TEST_DETAIL_LINES = 20;
+
+/** ...and at most this many characters. */
+const MAX_FAILED_TEST_DETAIL_CHARS = 2000;
+
+/**
+ * The failed tests a project's report entry carries (CLI >= 1.7.0:
+ * `testResults[].failedTests`, each with `name`, `message` and `stackTrace`).
+ * Older reports do not carry the key and yield an empty list.
+ */
+function failedTestsOf(project) {
+  const tests = project && Array.isArray(project.failedTests) ? project.failedTests : [];
+  return tests.filter((t) => t && typeof t === 'object');
+}
+
+/**
+ * Normalises a message or stack trace and cuts it to the detail bounds, ending
+ * a cut text with a note so a reader knows there was more. The CLI already
+ * bounds both, this guards against a report written by anything else.
+ */
+function boundFailedTestDetail(value) {
+  const text = typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : '';
+  if (!text) return '';
+  const lines = text.split('\n');
+  let kept = lines.slice(0, MAX_FAILED_TEST_DETAIL_LINES).join('\n');
+  let cut = lines.length > MAX_FAILED_TEST_DETAIL_LINES;
+  if (kept.length > MAX_FAILED_TEST_DETAIL_CHARS) {
+    kept = kept.slice(0, MAX_FAILED_TEST_DETAIL_CHARS);
+    cut = true;
+  }
+  return cut ? `${kept}\n… (truncated)` : kept;
+}
+
+/**
+ * Wraps report text in a fenced code block that the text cannot close: the
+ * fence is one backtick longer than the longest backtick run inside it. Inside
+ * the block GitHub renders nothing as Markdown or HTML and resolves no
+ * `@mention`, so a test message from a fork's code renders literally.
+ */
+function codeBlock(text) {
+  const longest = Math.max(0, ...(text.match(/`+/g) || []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return [`${fence}text`, text, fence];
+}
+
+/**
+ * One failed test: its escaped name as a list item and, unless only names fit,
+ * its message (and with `full` its stack trace) in a collapsed block.
+ */
+function failedTestEntry(failedTest, mode) {
+  const item = `- ❌ ${escapeInline(failedTest.name || '(unnamed test)')}`;
+  if (mode === 'names') return [item];
+  const message = boundFailedTestDetail(failedTest.message);
+  const stackTrace = mode === 'full' ? boundFailedTestDetail(failedTest.stackTrace) : '';
+  const detail = [message, stackTrace].filter(Boolean).join('\n\n');
+  if (!detail) return [item];
+  const label = stackTrace ? 'Message and stack trace' : 'Message';
+  return [item, '', `<details><summary>${label}</summary>`, '', ...codeBlock(detail), '', '</details>', ''];
+}
+
+/**
+ * Renders the "Failed tests" section: the failing projects in the table's order
+ * (failing first, then by name), each with its failed tests. At most
+ * MAX_FAILED_TESTS_SHOWN tests are listed in total; a closing note counts the
+ * rest, including those the CLI itself left out of its bounded list. `mode`
+ * selects the detail level that survives the size budget: `full` (message and
+ * stack trace), `messages`, `names`, or `none`. Returns an empty array when no
+ * project reports a failed test.
+ */
+function failedTestLines(projects, mode = 'full') {
+  if (mode === 'none') return [];
+  const list = (projects || []).filter((p) => p && typeof p === 'object');
+  const failing = sortTestProjects(list).filter((p) => failedTestsOf(p).length > 0);
+  if (failing.length === 0) return [];
+
+  const lines = ['### Failed tests', ''];
+  let shown = 0;
+  let notShown = 0;
+  for (const project of failing) {
+    const tests = failedTestsOf(project);
+    const listed = tests.slice(0, Math.max(0, MAX_FAILED_TESTS_SHOWN - shown));
+    const reported = Number.isFinite(project.failed) ? Math.max(project.failed, tests.length) : tests.length;
+    notShown += reported - listed.length;
+    if (listed.length === 0) continue;
+    shown += listed.length;
+    lines.push(`**${escapeInline(project.project || '(unknown)')}**`, '');
+    for (const failedTest of listed) lines.push(...failedTestEntry(failedTest, mode));
+    lines.push('');
+  }
+  if (notShown > 0) {
+    lines.push(`_… ${notShown} more failed test(s) not shown; the job log lists them._`, '');
+  }
+  return lines;
+}
+
 /**
  * Rounds a percentage down to two decimals, matching the number the badge shows.
  * Flooring (not rounding) is deliberate: 99.999% must never be advertised as
@@ -1527,16 +1626,27 @@ function analysisBadgePayload(counts) {
   });
 }
 
-/** How much of the test table to keep, most detailed first. */
-const TEST_TABLE_MODES = ['full', 'failing', 'totals'];
+/**
+ * The detail levels of the test table and the failed-tests section, tried in
+ * order until the report fits: stack traces go first, then the passing rows,
+ * then the messages, then the failing rows, and the failed test names last.
+ */
+const COVERAGE_DETAIL_LEVELS = [
+  ['full', 'full'],
+  ['full', 'messages'],
+  ['failing', 'messages'],
+  ['failing', 'names'],
+  ['totals', 'names'],
+  ['totals', 'none'],
+];
 
 /**
- * Builds the Markdown report for a coverage run, degrading the test table until
- * the result fits the character budget: every project, then only the failing
- * ones, then the totals alone. The same body is posted as the sticky comment and
- * as the check-run summary, so one guard covers both limits. The last mode is
- * returned even if it still does not fit — there is nothing smaller to try, and
- * a body GitHub might reject beats no report at all.
+ * Builds the Markdown report for a coverage run, degrading the test table and
+ * the failed-tests section until the result fits the character budget (see
+ * COVERAGE_DETAIL_LEVELS). The same body is posted as the job summary, the
+ * sticky comment and the check-run summary, so one guard covers every limit.
+ * The last level is returned even if it still does not fit — there is nothing
+ * smaller to try, and a body GitHub might reject beats no report at all.
  */
 function buildCoverageComment(summary, workspace, opts) {
   const { titleSuffix, exitCode } = opts;
@@ -1563,8 +1673,13 @@ function buildCoverageComment(summary, workspace, opts) {
   const tail = coverageRegionLines(summary, workspace, opts);
 
   let markdown = '';
-  for (const mode of TEST_TABLE_MODES) {
-    markdown = [...head, ...testTableRows(summary.projects, summary.testCounts, mode), ...tail].join('\n');
+  for (const [tableMode, failedMode] of COVERAGE_DETAIL_LEVELS) {
+    markdown = [
+      ...head,
+      ...testTableRows(summary.projects, summary.testCounts, tableMode),
+      ...failedTestLines(summary.projects, failedMode),
+      ...tail,
+    ].join('\n');
     if (markdown.length <= MAX_COMMENT_CHARS) break;
   }
   return markdown;
@@ -2722,6 +2837,10 @@ export {
   isPercentInput,
   testCountsFor,
   testTableRows,
+  failedTestLines,
+  boundFailedTestDetail,
+  codeBlock,
+  MAX_FAILED_TESTS_SHOWN,
   projectFailed,
   projectResultCell,
   sortTestProjects,

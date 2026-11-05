@@ -71047,6 +71047,65 @@ function testTableRows(projects, counts, mode = "full") {
   rows.push(testTotalsRow(list, counts));
   return [...rows, ...notes, ""];
 }
+var MAX_FAILED_TESTS_SHOWN = 20;
+var MAX_FAILED_TEST_DETAIL_LINES = 20;
+var MAX_FAILED_TEST_DETAIL_CHARS = 2e3;
+function failedTestsOf(project) {
+  const tests = project && Array.isArray(project.failedTests) ? project.failedTests : [];
+  return tests.filter((t) => t && typeof t === "object");
+}
+function boundFailedTestDetail(value) {
+  const text2 = typeof value === "string" ? value.replace(/\r\n?/g, "\n").trim() : "";
+  if (!text2) return "";
+  const lines = text2.split("\n");
+  let kept = lines.slice(0, MAX_FAILED_TEST_DETAIL_LINES).join("\n");
+  let cut = lines.length > MAX_FAILED_TEST_DETAIL_LINES;
+  if (kept.length > MAX_FAILED_TEST_DETAIL_CHARS) {
+    kept = kept.slice(0, MAX_FAILED_TEST_DETAIL_CHARS);
+    cut = true;
+  }
+  return cut ? `${kept}
+\u2026 (truncated)` : kept;
+}
+function codeBlock(text2) {
+  const longest = Math.max(0, ...(text2.match(/`+/g) || []).map((run2) => run2.length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return [`${fence}text`, text2, fence];
+}
+function failedTestEntry(failedTest, mode) {
+  const item = `- \u274C ${escapeInline(failedTest.name || "(unnamed test)")}`;
+  if (mode === "names") return [item];
+  const message = boundFailedTestDetail(failedTest.message);
+  const stackTrace = mode === "full" ? boundFailedTestDetail(failedTest.stackTrace) : "";
+  const detail = [message, stackTrace].filter(Boolean).join("\n\n");
+  if (!detail) return [item];
+  const label = stackTrace ? "Message and stack trace" : "Message";
+  return [item, "", `<details><summary>${label}</summary>`, "", ...codeBlock(detail), "", "</details>", ""];
+}
+function failedTestLines(projects, mode = "full") {
+  if (mode === "none") return [];
+  const list = (projects || []).filter((p) => p && typeof p === "object");
+  const failing = sortTestProjects(list).filter((p) => failedTestsOf(p).length > 0);
+  if (failing.length === 0) return [];
+  const lines = ["### Failed tests", ""];
+  let shown = 0;
+  let notShown = 0;
+  for (const project of failing) {
+    const tests = failedTestsOf(project);
+    const listed = tests.slice(0, Math.max(0, MAX_FAILED_TESTS_SHOWN - shown));
+    const reported = Number.isFinite(project.failed) ? Math.max(project.failed, tests.length) : tests.length;
+    notShown += reported - listed.length;
+    if (listed.length === 0) continue;
+    shown += listed.length;
+    lines.push(`**${escapeInline(project.project || "(unknown)")}**`, "");
+    for (const failedTest of listed) lines.push(...failedTestEntry(failedTest, mode));
+    lines.push("");
+  }
+  if (notShown > 0) {
+    lines.push(`_\u2026 ${notShown} more failed test(s) not shown; the job log lists them._`, "");
+  }
+  return lines;
+}
 function floorPercent(percent) {
   return Math.floor(Number((percent * 100).toFixed(6))) / 100;
 }
@@ -71081,7 +71140,14 @@ function analysisBadgePayload(counts) {
     findings: { errors: counts.error, warnings: counts.warn, infos: counts.info }
   });
 }
-var TEST_TABLE_MODES = ["full", "failing", "totals"];
+var COVERAGE_DETAIL_LEVELS = [
+  ["full", "full"],
+  ["full", "messages"],
+  ["failing", "messages"],
+  ["failing", "names"],
+  ["totals", "names"],
+  ["totals", "none"]
+];
 function buildCoverageComment(summary2, workspace, opts) {
   const { titleSuffix, exitCode } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
@@ -71102,8 +71168,13 @@ function buildCoverageComment(summary2, workspace, opts) {
   ];
   const tail = coverageRegionLines(summary2, workspace, opts);
   let markdown = "";
-  for (const mode of TEST_TABLE_MODES) {
-    markdown = [...head, ...testTableRows(summary2.projects, summary2.testCounts, mode), ...tail].join("\n");
+  for (const [tableMode, failedMode] of COVERAGE_DETAIL_LEVELS) {
+    markdown = [
+      ...head,
+      ...testTableRows(summary2.projects, summary2.testCounts, tableMode),
+      ...failedTestLines(summary2.projects, failedMode),
+      ...tail
+    ].join("\n");
     if (markdown.length <= MAX_COMMENT_CHARS) break;
   }
   return markdown;
@@ -71872,11 +71943,14 @@ export {
   CLI_COMPLETE_MARKER,
   MAX_COMMENT_CHARS,
   MAX_COMMENT_ROWS,
+  MAX_FAILED_TESTS_SHOWN,
   PLATFORMS,
   analysisBadgePayload,
+  boundFailedTestDetail,
   buildBadgePayload,
   buildComment,
   buildCoverageComment,
+  codeBlock,
   commentMarker,
   completeExecutable,
   conclusionFor,
@@ -71893,6 +71967,7 @@ export {
   escapeInline,
   failOnBadge,
   failOnColor,
+  failedTestLines,
   fetchManifest,
   findExecutable,
   floorPercent,
