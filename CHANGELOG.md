@@ -7,6 +7,8 @@ the latest release in its line.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-19
+
 ### Added
 
 - Coverage mode: new `affected-by` input (default `false`). When `true`, the
@@ -313,7 +315,8 @@ the latest release in its line.
 See the [GitHub Releases](https://github.com/bochmann-software/codeguard/releases)
 page for the history of the `1.6.x` and earlier lines.
 
-[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/bochmann-software/codeguard/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/bochmann-software/codeguard/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/bochmann-software/codeguard/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/bochmann-software/codeguard/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/bochmann-software/codeguard/compare/v1.9.1...v1.9.2
