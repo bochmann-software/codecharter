@@ -205,6 +205,24 @@ inputs:
       Requires a CLI with changed-line coverage (`version: latest` satisfies it).
     required: false
     default: ''
+  affected-by:
+    description: |
+      Coverage mode only. When `true`, also passes `--affected-by <range>` to
+      `codecharter coverage`, so only the test projects reachable from the changed
+      files run. The range is exactly the one passed as `--git-ref`, so it needs
+      `diff: true` (or a git ref range); with `diff` off, or on an event where
+      `diff: true` finds no range, the step fails. Needs `actions/checkout` with
+      `fetch-depth: 0` so the merge base is in the checkout.
+    required: false
+    default: 'false'
+  fail-on-unmeasured-projects:
+    description: |
+      Coverage mode only. When `true`, passes `--fail-on-unmeasured-projects`, so
+      changed production projects that no test project references fail the gate.
+      Like `affected-by` it needs `diff: true` (or a git ref range) and fails the
+      step otherwise.
+    required: false
+    default: 'false'
   skip-tests:
     description: |
       Coverage mode only. When `true`, do not run the tests; analyze the coverage

@@ -70,6 +70,8 @@ jobs:
 | `coverage-root` | no | `''` (repo root) | Coverage mode only. Directory tree searched for test projects |
 | `min-coverage` | no | `''` (repo config) | Coverage mode only. Minimum required line coverage (0-100), e.g. `99.5`. Overrides `coverage.minimum-percent` from `.codecharter/config.yml` for this run |
 | `min-diff-coverage` | no | `''` (effective `min-coverage`) | Coverage mode only. Minimum required coverage of the changed lines (0-100), e.g. `100`. Needs `diff`; the changed-lines gate then decides the result and whole-solution coverage is only reported (see below) |
+| `affected-by` | no | `false` | Coverage mode only. Also pass `--affected-by <range>` so only the test projects reachable from the changed files run. Uses exactly the range passed as `--git-ref`, so it needs `diff`; the step fails when `diff` is off or resolves no range. Needs `actions/checkout` with `fetch-depth: 0` |
+| `fail-on-unmeasured-projects` | no | `false` | Coverage mode only. Pass `--fail-on-unmeasured-projects`: changed production projects that no test project references fail the gate. Needs `diff`, same validation as `affected-by` |
 | `skip-tests` | no | `false` | Coverage mode only. Analyze the coverage files already present under the results root instead of running the tests |
 | `results-root` | no | `''` (CLI default) | Coverage mode only. Directory for test and coverage artifacts |
 | `fail-on-threshold` | no | `true` | Coverage mode only. Set `false` to report coverage below the minimum without failing the step (with `diff`, the changed-lines minimum). Failing tests, missing data and config errors still fail |

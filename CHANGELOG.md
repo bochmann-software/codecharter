@@ -7,6 +7,18 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Added
+
+- Coverage mode: new `affected-by` input (default `false`). When `true`, the
+  action also passes `--affected-by <range>` to `codecharter coverage`, with
+  exactly the range it passes as `--git-ref`, so only the test projects reachable
+  from the changed files run. It needs `diff` and `actions/checkout` with
+  `fetch-depth: 0`; with `diff` off or no resolvable range the step fails with a
+  clear message.
+- Coverage mode: new `fail-on-unmeasured-projects` input (default `false`). When
+  `true`, the action passes `--fail-on-unmeasured-projects`, with the same `diff`
+  requirement and validation as `affected-by`.
+
 ### Fixed
 
 - Several self-hosted runners sharing one tool cache no longer break each

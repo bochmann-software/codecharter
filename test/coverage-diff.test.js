@@ -26,6 +26,7 @@ import { core, exec, github } from '../src/deps.js';
 import {
   resolveCoverageGitRef,
   resolveCoverageDiffArgs,
+  enabledRangeFlags,
   validateCoverageDiffInputs,
   isPercentInput,
   diffCoverageSummary,
@@ -451,4 +452,76 @@ test('coverageSummary: 19999 of 20000 lines at 99.995% is met although the floor
   assert.equal(coverageSummary(report).met, true);
   report.summary.coveredLines = 19998;
   assert.equal(coverageSummary(report).met, false);
+});
+
+// ---------------------------------------------------------------------------
+// affected-by / fail-on-unmeasured-projects
+// ---------------------------------------------------------------------------
+
+test('resolveCoverageDiffArgs: affected-by reuses the --git-ref range string exactly', async () => {
+  github.context.payload = { pull_request: { base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
+  const args = await resolveCoverageDiffArgs({ diff: 'true', affectedBy: 'true' }, workspace);
+  assert.deepEqual(args, ['--git-ref', 'MERGEBASE..HEADSHA', '--affected-by', 'MERGEBASE..HEADSHA']);
+  assert.equal(args[1], args[3]);
+});
+
+test('resolveCoverageDiffArgs: an explicit range feeds both flags and fail-on-unmeasured-projects is bare', async () => {
+  const args = await resolveCoverageDiffArgs(
+    { diff: 'origin/main..HEAD', affectedBy: 'TRUE', failOnUnmeasuredProjects: 'true', minDiffCoverage: '90' },
+    workspace
+  );
+  assert.deepEqual(args, [
+    '--git-ref',
+    'origin/main..HEAD',
+    '--min-diff-coverage',
+    '90',
+    '--affected-by',
+    'origin/main..HEAD',
+    '--fail-on-unmeasured-projects',
+  ]);
+});
+
+test('resolveCoverageDiffArgs: fail-on-unmeasured-projects alone adds only its flag', async () => {
+  const args = await resolveCoverageDiffArgs({ diff: 'a..b', failOnUnmeasuredProjects: 'true' }, workspace);
+  assert.deepEqual(args, ['--git-ref', 'a..b', '--fail-on-unmeasured-projects']);
+});
+
+test('resolveCoverageDiffArgs: defaults and "false" add no new arguments', async () => {
+  assert.deepEqual(await resolveCoverageDiffArgs({ diff: 'a..b' }, workspace), ['--git-ref', 'a..b']);
+  assert.deepEqual(
+    await resolveCoverageDiffArgs({ diff: 'a..b', affectedBy: 'false', failOnUnmeasuredProjects: '' }, workspace),
+    ['--git-ref', 'a..b']
+  );
+  assert.deepEqual(failures, []);
+});
+
+test('resolveCoverageDiffArgs: affected-by with diff off fails the step', async () => {
+  assert.equal(await resolveCoverageDiffArgs({ diff: 'false', affectedBy: 'true' }, workspace), null);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /`affected-by` need a changed-lines range/);
+});
+
+test('resolveCoverageDiffArgs: fail-on-unmeasured-projects with diff off names the input', async () => {
+  assert.equal(await resolveCoverageDiffArgs({ failOnUnmeasuredProjects: 'true' }, workspace), null);
+  assert.match(failures[0], /`fail-on-unmeasured-projects`/);
+});
+
+test('resolveCoverageDiffArgs: both flags with diff off name both inputs', async () => {
+  assert.equal(
+    await resolveCoverageDiffArgs({ affectedBy: 'true', failOnUnmeasuredProjects: 'true' }, workspace),
+    null
+  );
+  assert.match(failures[0], /`affected-by` and `fail-on-unmeasured-projects`/);
+});
+
+test('resolveCoverageDiffArgs: affected-by on an event without a range fails instead of warning', async () => {
+  // workflow_dispatch: diff: true resolves no range.
+  assert.equal(await resolveCoverageDiffArgs({ diff: 'true', affectedBy: 'true' }, workspace), null);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /resolved no range/);
+});
+
+test('enabledRangeFlags: only a literal true switches a flag on', () => {
+  assert.deepEqual(enabledRangeFlags({}), []);
+  assert.deepEqual(enabledRangeFlags({ affectedBy: ' True ', failOnUnmeasuredProjects: 'yes' }), ['affected-by']);
 });

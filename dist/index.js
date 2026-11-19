@@ -70521,7 +70521,7 @@ async function resolveDiffArgs(diffInput, workspace, tmp) {
   }
   return ["--diff", diffFile];
 }
-function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
+function validateCoverageDiffInputs(diffInput, minDiffInput, workspace, rangeFlags = []) {
   const minDiff = (minDiffInput || "").trim();
   if (minDiff && !isPercentInput(minDiff)) {
     core.setFailed(
@@ -70532,6 +70532,10 @@ function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
   const value = (diffInput || "").trim();
   const lower = value.toLowerCase();
   if (!value || lower === "false") {
+    if (rangeFlags.length) {
+      core.setFailed(rangeFlagsNeedDiffMessage(rangeFlags));
+      return false;
+    }
     if (!minDiff) return true;
     core.setFailed(
       "`min-diff-coverage` is set, but `diff` is off, so there are no changed lines to gate. What to do: set `diff: true` (or a git ref range) to gate the changed lines, or remove `min-diff-coverage`."
@@ -70551,6 +70555,19 @@ function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
     `Invalid \`diff\` input "${value}" for coverage mode. Use 'true'/'false' or a git ref range (e.g. origin/main..HEAD).`
   );
   return false;
+}
+function isTrueInput(value) {
+  return (value || "").trim().toLowerCase() === "true";
+}
+function enabledRangeFlags(options) {
+  const flags = [];
+  if (isTrueInput(options.affectedBy)) flags.push("affected-by");
+  if (isTrueInput(options.failOnUnmeasuredProjects)) flags.push("fail-on-unmeasured-projects");
+  return flags;
+}
+function rangeFlagsNeedDiffMessage(flags) {
+  const names = flags.map((f) => `\`${f}\``).join(" and ");
+  return `${names} need a changed-lines range, but \`diff\` is off or resolved no range. What to do: set \`diff: true\` (or a git ref range) so the CLI receives \`--git-ref\`, or remove the input.`;
 }
 async function resolveCoverageGitRef(diffInput, workspace) {
   const value = (diffInput || "").trim();
@@ -70574,16 +70591,23 @@ function isPercentInput(value) {
   return /^\d+(\.\d+)?$/.test(value) && Number(value) <= 100;
 }
 async function resolveCoverageDiffArgs(options, workspace) {
-  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace)) return null;
+  const rangeFlags = enabledRangeFlags(options);
+  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace, rangeFlags)) return null;
   const minDiff = (options.minDiffCoverage || "").trim();
   const resolved = await resolveCoverageGitRef(options.diff, workspace);
   if (resolved === null) return null;
   if (!resolved.gitRef) {
+    if (rangeFlags.length) {
+      core.setFailed(rangeFlagsNeedDiffMessage(rangeFlags));
+      return null;
+    }
     if (minDiff) core.warning("`min-diff-coverage` is ignored because no diff gate runs on this event.");
     return [];
   }
   const args = ["--git-ref", resolved.gitRef];
   if (minDiff) args.push("--min-diff-coverage", minDiff);
+  if (rangeFlags.includes("affected-by")) args.push("--affected-by", resolved.gitRef);
+  if (rangeFlags.includes("fail-on-unmeasured-projects")) args.push("--fail-on-unmeasured-projects");
   return args;
 }
 function readJson(filePath) {
@@ -71619,7 +71643,15 @@ async function run() {
     }
     core.info(`Auto-discovered solution: ${solution}`);
   }
-  if (mode === "coverage" && !validateCoverageDiffInputs(diffInput, core.getInput("min-diff-coverage"), workspace)) {
+  if (mode === "coverage" && !validateCoverageDiffInputs(
+    diffInput,
+    core.getInput("min-diff-coverage"),
+    workspace,
+    enabledRangeFlags({
+      affectedBy: core.getInput("affected-by"),
+      failOnUnmeasuredProjects: core.getInput("fail-on-unmeasured-projects")
+    })
+  )) {
     return;
   }
   const tmp = fs10.mkdtempSync(path14.join(os10.tmpdir(), "codecharter-"));
@@ -71656,6 +71688,8 @@ async function run() {
           minCoverage: core.getInput("min-coverage"),
           diff: diffInput,
           minDiffCoverage: core.getInput("min-diff-coverage"),
+          affectedBy: core.getInput("affected-by"),
+          failOnUnmeasuredProjects: core.getInput("fail-on-unmeasured-projects"),
           skipTests: (core.getInput("skip-tests") || "false").toLowerCase() === "true",
           resultsRoot: core.getInput("results-root"),
           failOnThreshold: (core.getInput("fail-on-threshold") || "true").toLowerCase() !== "false",
@@ -71890,6 +71924,7 @@ export {
   discoverSolutions,
   displayPath,
   downloadArchive,
+  enabledRangeFlags,
   escapeInline,
   failOnBadge,
   failOnColor,
