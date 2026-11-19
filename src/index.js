@@ -655,7 +655,7 @@ async function resolveDiffArgs(diffInput, workspace, tmp) {
  * asks for could never run). Returns true when the inputs are usable; otherwise
  * reports the failure and returns false.
  */
-function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
+function validateCoverageDiffInputs(diffInput, minDiffInput, workspace, rangeFlags = []) {
   const minDiff = (minDiffInput || '').trim();
   if (minDiff && !isPercentInput(minDiff)) {
     core.setFailed(
@@ -668,6 +668,10 @@ function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
   const value = (diffInput || '').trim();
   const lower = value.toLowerCase();
   if (!value || lower === 'false') {
+    if (rangeFlags.length) {
+      core.setFailed(rangeFlagsNeedDiffMessage(rangeFlags));
+      return false;
+    }
     if (!minDiff) return true;
     core.setFailed(
       '`min-diff-coverage` is set, but `diff` is off, so there are no changed lines to gate. What to do: set ' +
@@ -691,6 +695,30 @@ function validateCoverageDiffInputs(diffInput, minDiffInput, workspace) {
     `Invalid \`diff\` input "${value}" for coverage mode. Use 'true'/'false' or a git ref range (e.g. origin/main..HEAD).`
   );
   return false;
+}
+
+/** True when a boolean action input is switched on ('true', any case). */
+function isTrueInput(value) {
+  return (value || '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * Names the coverage inputs that hand the CLI the same range as `--git-ref`
+ * (`affected-by`, `fail-on-unmeasured-projects`) and are switched on.
+ */
+function enabledRangeFlags(options) {
+  const flags = [];
+  if (isTrueInput(options.affectedBy)) flags.push('affected-by');
+  if (isTrueInput(options.failOnUnmeasuredProjects)) flags.push('fail-on-unmeasured-projects');
+  return flags;
+}
+
+function rangeFlagsNeedDiffMessage(flags) {
+  const names = flags.map((f) => `\`${f}\``).join(' and ');
+  return (
+    `${names} ${flags.length > 1 ? 'need' : 'needs'} a changed-lines range, but \`diff\` is off or resolved no range. What to do: set ` +
+    '`diff: true` (or a git ref range) so the CLI receives `--git-ref`, or remove the input.'
+  );
 }
 
 /**
@@ -741,18 +769,27 @@ function isPercentInput(value) {
  * requests and pushes.
  */
 async function resolveCoverageDiffArgs(options, workspace) {
-  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace)) return null;
+  const rangeFlags = enabledRangeFlags(options);
+  if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace, rangeFlags)) return null;
   const minDiff = (options.minDiffCoverage || '').trim();
 
   const resolved = await resolveCoverageGitRef(options.diff, workspace);
   if (resolved === null) return null;
   if (!resolved.gitRef) {
+    if (rangeFlags.length) {
+      core.setFailed(rangeFlagsNeedDiffMessage(rangeFlags));
+      return null;
+    }
     if (minDiff) core.warning('`min-diff-coverage` is ignored because no diff gate runs on this event.');
     return [];
   }
 
   const args = ['--git-ref', resolved.gitRef];
   if (minDiff) args.push('--min-diff-coverage', minDiff);
+  // The CLI rejects an --affected-by range that differs from --git-ref (exit 64),
+  // so both always carry the one resolved string.
+  if (rangeFlags.includes('affected-by')) args.push('--affected-by', resolved.gitRef);
+  if (rangeFlags.includes('fail-on-unmeasured-projects')) args.push('--fail-on-unmeasured-projects');
   return args;
 }
 
@@ -2302,7 +2339,18 @@ async function run() {
   }
 
   // A misconfigured changed-lines gate fails here, before the CLI download.
-  if (mode === 'coverage' && !validateCoverageDiffInputs(diffInput, core.getInput('min-diff-coverage'), workspace)) {
+  if (
+    mode === 'coverage' &&
+    !validateCoverageDiffInputs(
+      diffInput,
+      core.getInput('min-diff-coverage'),
+      workspace,
+      enabledRangeFlags({
+        affectedBy: core.getInput('affected-by'),
+        failOnUnmeasuredProjects: core.getInput('fail-on-unmeasured-projects'),
+      })
+    )
+  ) {
     return;
   }
 
@@ -2350,6 +2398,8 @@ async function run() {
           minCoverage: core.getInput('min-coverage'),
           diff: diffInput,
           minDiffCoverage: core.getInput('min-diff-coverage'),
+          affectedBy: core.getInput('affected-by'),
+          failOnUnmeasuredProjects: core.getInput('fail-on-unmeasured-projects'),
           skipTests: (core.getInput('skip-tests') || 'false').toLowerCase() === 'true',
           resultsRoot: core.getInput('results-root'),
           failOnThreshold: (core.getInput('fail-on-threshold') || 'true').toLowerCase() !== 'false',
@@ -2718,6 +2768,7 @@ export {
   resolveEventRange,
   resolveCoverageGitRef,
   resolveCoverageDiffArgs,
+  enabledRangeFlags,
   validateCoverageDiffInputs,
   isPercentInput,
   testCountsFor,
