@@ -498,12 +498,12 @@ test('resolveCoverageDiffArgs: defaults and "false" add no new arguments', async
 test('resolveCoverageDiffArgs: affected-by with diff off fails the step', async () => {
   assert.equal(await resolveCoverageDiffArgs({ diff: 'false', affectedBy: 'true' }, workspace), null);
   assert.equal(failures.length, 1);
-  assert.match(failures[0], /`affected-by` need a changed-lines range/);
+  assert.match(failures[0], /^`affected-by` needs a changed-lines range/);
 });
 
 test('resolveCoverageDiffArgs: fail-on-unmeasured-projects with diff off names the input', async () => {
   assert.equal(await resolveCoverageDiffArgs({ failOnUnmeasuredProjects: 'true' }, workspace), null);
-  assert.match(failures[0], /`fail-on-unmeasured-projects`/);
+  assert.match(failures[0], /^`fail-on-unmeasured-projects` needs a changed-lines range/);
 });
 
 test('resolveCoverageDiffArgs: both flags with diff off name both inputs', async () => {
@@ -511,7 +511,7 @@ test('resolveCoverageDiffArgs: both flags with diff off name both inputs', async
     await resolveCoverageDiffArgs({ affectedBy: 'true', failOnUnmeasuredProjects: 'true' }, workspace),
     null
   );
-  assert.match(failures[0], /`affected-by` and `fail-on-unmeasured-projects`/);
+  assert.match(failures[0], /^`affected-by` and `fail-on-unmeasured-projects` need a changed-lines range/);
 });
 
 test('resolveCoverageDiffArgs: affected-by on an event without a range fails instead of warning', async () => {

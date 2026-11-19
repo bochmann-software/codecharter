@@ -70567,7 +70567,7 @@ function enabledRangeFlags(options) {
 }
 function rangeFlagsNeedDiffMessage(flags) {
   const names = flags.map((f) => `\`${f}\``).join(" and ");
-  return `${names} need a changed-lines range, but \`diff\` is off or resolved no range. What to do: set \`diff: true\` (or a git ref range) so the CLI receives \`--git-ref\`, or remove the input.`;
+  return `${names} ${flags.length > 1 ? "need" : "needs"} a changed-lines range, but \`diff\` is off or resolved no range. What to do: set \`diff: true\` (or a git ref range) so the CLI receives \`--git-ref\`, or remove the input.`;
 }
 async function resolveCoverageGitRef(diffInput, workspace) {
   const value = (diffInput || "").trim();
