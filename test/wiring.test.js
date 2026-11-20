@@ -903,7 +903,7 @@ test('coverage mode: a failed diff gate with an unknown percent and minimum says
   await coverageRun(report, { diff: 'a..b', failOnThreshold: true }, 1);
   assert.match(
     failures[0],
-    /^Changed-line coverage is unknown \(1 of 2 changed lines\), below the required 100% \(threshold from `default`\)/
+    /^Changed-line coverage is – \(1 of 2 changed lines\), below the required 100% \(threshold from `default`\)/
   );
 });
 
@@ -982,6 +982,292 @@ test('coverage mode: run() hands the diff and min-diff-coverage inputs to the CL
   ]);
   assert.equal(path.basename(tmpJson), 'coverage.json');
   assert.match(failures[0], /^Changed-line coverage is 60\.00%/);
+});
+
+// ---------------------------------------------------------------------------
+// affected-by in coverage mode
+// ---------------------------------------------------------------------------
+
+test('coverage mode: affected-by on a pull request passes the one range as --git-ref and --affected-by', async () => {
+  github.context.eventName = 'pull_request';
+  github.context.payload = { pull_request: { number: 7, base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
+  const payload = await coverageRun(
+    realReport('coverage-affected-no-scope.json'),
+    { diff: 'true', minDiffCoverage: '100', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.deepEqual(cliArgs, [
+    ...coverageHead(),
+    '--git-ref',
+    'MERGEBASE..HEADSHA',
+    '--min-diff-coverage',
+    '100',
+    '--affected-by',
+    'MERGEBASE..HEADSHA',
+  ]);
+  assert.equal(payload.conclusion, 'success');
+  assert.match(payload.summary, /The CLI did not report which test projects it skipped/);
+  assert.match(payload.summary, /affected selection reported only/);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: without affected-by the summary has no selection block', async () => {
+  const payload = await coverageRun(realReport('coverage-affected-no-scope.json'), { diff: 'a..b' }, 0);
+  assert.doesNotMatch(payload.summary, /Test selection/);
+  assert.match(payload.summary, /whole solution reported only/);
+});
+
+test('coverage mode: a missed overall minimum with met changed lines fails as the overall gate', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-scope-selection-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Coverage 70.00% is below the required minimum (changed lines met)');
+  assert.match(payload.summary, /Ran 1 of 3 test project\(s\)/);
+  assert.deepEqual(failures, [
+    'The changed lines are covered, but overall coverage is 70.00%, below the required 100% (threshold from ' +
+      '`default`). What to do: cover the regions listed above, or pass a lower `min-coverage`.',
+  ]);
+});
+
+test('coverage mode: fail-on-threshold: false reports a missed overall minimum without failing', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-scope-selection-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: false },
+    1
+  );
+  assert.equal(payload.conclusion, 'neutral');
+  assert.deepEqual(failures, []);
+  assert.ok(infos.some((m) => /^The changed lines are covered, but overall coverage is 70\.00%.*Not failing/.test(m)));
+});
+
+test('coverage mode: a missed overall minimum with an unknown percent says so', async () => {
+  const report = realReport('coverage-affected-scope-selection-below.json');
+  report.summary.percent = null;
+  report.summary.minimumRequiredPercent = null;
+  await coverageRun(report, { diff: 'a..b', affectedBy: 'true', failOnThreshold: true }, 1);
+  assert.match(failures[0], /overall coverage is –, below the required 100% /);
+});
+
+test('coverage mode: a failed completeness check names the changed file without coverage data', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-cross-check-failed.json'),
+    { diff: 'a..b', affectedBy: 'true' },
+    3
+  );
+  assert.equal(payload.title, 'No coverage data: a changed file has no coverage data in the selected test projects');
+  assert.match(payload.summary, /Completeness check failed/);
+  assert.equal(failures.length, 1);
+  assert.match(
+    failures[0],
+    /^The `affected-by` completeness check failed: the changed file \S*src\/App\/Widget\.cs has no/
+  );
+});
+
+test('coverage mode: exit 3 without a coverageScope keeps the generic no-data message', async () => {
+  await coverageRun(null, { diff: 'a..b', affectedBy: 'true' }, 3);
+  assert.match(failures[0], /^The coverage run produced no coverage data/);
+});
+
+test('coverage mode: a NoData report names its reason in the title and the failure message', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-nodata-no-coverage-files.json'),
+    { diff: 'a..b', affectedBy: 'true' },
+    3
+  );
+  assert.equal(payload.title, 'No coverage data: the test run wrote no coverage files');
+  assert.match(payload.summary, /\*\*Reason:\*\* the test run wrote no coverage files \(`noCoverageFiles`\)\./);
+  assert.equal(failures.length, 1);
+  assert.match(
+    failures[0],
+    /^The coverage run produced no coverage data\. Reason: the test run wrote no coverage files\. What to do:/
+  );
+});
+
+test('coverage mode: a test project that failed names its reason in the failure message', async () => {
+  await coverageRun(realReport('coverage-nodata-test-project-failed.json'), { diff: 'a..b', affectedBy: 'true' }, 3);
+  assert.match(failures[0], /Reason: a test project failed, so no complete coverage run exists\./);
+});
+
+test('coverage mode: an escalated selection passes and says it widened to every test project', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-escalated.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.equal(payload.conclusion, 'success');
+  assert.match(payload.summary, /\*\*Selection escalated to all test projects:\*\* Common\.Core changed/);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: an unmeasured affected project is warned about in the summary', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-unmeasured-projects.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.match(payload.summary, /\*\*Warning:\*\* no test project measured 1 affected project\(s\): Core\.Lib\./);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: a 0 of 0 changed-lines gate passes with a dash percent', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-zero-measured.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.equal(payload.conclusion, 'success');
+  assert.equal(payload.title, 'Diff coverage: no measurable changed lines (gate passed over 0 lines)');
+  assert.match(payload.summary, /\| Changed lines \| 0 \| 0 \| – \| 100% \| yes \|/);
+  assert.deepEqual(failures, []);
+});
+
+// Runs run() in coverage mode with the given inputs against a stubbed download
+// and a CLI that writes the given report and exits 0.
+async function coverageRunViaRun(inputs, report) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-aff-'));
+  process.env.GITHUB_WORKSPACE = workspace;
+  process.env['INPUT_API-KEY'] = 'KEY';
+  process.env.INPUT_CACHE = 'false';
+  process.env.INPUT_MODE = 'coverage';
+  Object.assign(process.env, inputs);
+  HttpClient.prototype.get = async () => {
+    const stream = Readable.from(['archive']);
+    stream.statusCode = 200;
+    stream.headers = {};
+    return { message: stream, readBody: async () => '' };
+  };
+  const extract = async (_archive, dir) => {
+    fs.writeFileSync(path.join(dir, process.platform === 'win32' ? 'codecharter.exe' : 'codecharter'), '');
+    return dir;
+  };
+  tc.extractTar = extract;
+  tc.extractZip = extract;
+  exec.exec = async (cmd, args) => {
+    cliArgs = args;
+    fs.writeFileSync(args[args.indexOf('--output-file') + 1], JSON.stringify(report));
+    return 0;
+  };
+  try {
+    await run();
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+}
+
+test('coverage mode: run() hands affected-by and fail-on-unmeasured-projects to the CLI', async () => {
+  await coverageRunViaRun(
+    {
+      INPUT_DIFF: 'origin/main..HEAD',
+      'INPUT_AFFECTED-BY': 'true',
+      'INPUT_FAIL-ON-UNMEASURED-PROJECTS': 'true',
+    },
+    realReport('coverage-affected-no-scope.json')
+  );
+  assert.deepEqual(cliArgs.slice(4), [
+    '--git-ref',
+    'origin/main..HEAD',
+    '--affected-by',
+    'origin/main..HEAD',
+    '--fail-on-unmeasured-projects',
+  ]);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: run() rejects an invalid affected-by before the CLI download', async () => {
+  await coverageRunViaRun({ INPUT_DIFF: 'origin/main..HEAD', 'INPUT_AFFECTED-BY': 'yes' }, {});
+  assert.equal(cliArgs, null, 'the CLI never ran');
+  assert.deepEqual(posts, []);
+  assert.deepEqual(failures, ['Invalid `affected-by` "yes". Use `true` or `false`.']);
+});
+
+test('coverage mode: both gates met passes, the badge is skipped and the summary says so', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-met.json'),
+    { diff: 'a..b', affectedBy: 'true', badge: true, failOnThreshold: true },
+    0
+  );
+  assert.equal(payload.conclusion, 'success');
+  assert.equal('badge' in payload, false, 'a narrowed run sends no badge');
+  assert.match(payload.summary, /\| Affected selection \| 10 \| 10 \| 100\.00% \| 100% \| yes \|/);
+  assert.match(payload.summary, /coverage badge is not updated on `affected-by` runs/);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: only the changed lines missed fails with the changed-lines message', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-diff-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Diff coverage 60.00% (3/5 changed lines) is below the required minimum');
+  assert.deepEqual(failures, [
+    'Changed-line coverage is 60.00% (3 of 5 changed lines), below the required 100% (threshold from `--min-diff-coverage`). ' +
+      'What to do: cover the changed lines listed above, or pass a lower `min-diff-coverage`.',
+  ]);
+});
+
+test('coverage mode: both gates missed fails once and names both', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-both-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Coverage 70.00% and changed lines 60.00% are below the required minimum');
+  assert.match(payload.summary, /\| Changed lines \| 5 \| 3 \| 60\.00% \| 100% \| \*\*no\*\* \|/);
+  assert.match(payload.summary, /\| Affected selection \| 10 \| 7 \| 70\.00% \| 100% \| \*\*no\*\* \|/);
+  assert.deepEqual(failures, [
+    'Changed-line coverage is 60.00% (3 of 5 changed lines), below the required 100%, and overall coverage is 70.00%, ' +
+      'below the required 100% (threshold from `default`). What to do: cover the changed lines and the regions listed ' +
+      'above, or pass lower `min-diff-coverage` and `min-coverage`.',
+  ]);
+});
+
+test('coverage mode: both gates missed with fail-on-threshold: false reports without failing', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-both-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: false },
+    1
+  );
+  assert.equal(payload.conclusion, 'neutral');
+  assert.deepEqual(failures, []);
+  // Ordered substring checks (linear) instead of a regex with several `.*`.
+  const inOrder = (m, ...parts) => {
+    let at = 0;
+    for (const part of parts) {
+      const found = m.indexOf(part, at);
+      if (found < 0) return false;
+      at = found + part.length;
+    }
+    return true;
+  };
+  assert.ok(
+    infos.some(
+      (m) =>
+        m.startsWith('Changed-line coverage is 60.00%') &&
+        inOrder(m, 'Changed-line coverage is 60.00%', 'overall coverage is 70.00%', 'Not failing')
+    )
+  );
+});
+
+test('coverage mode: an unfiltered run sends the badge and says nothing about it', async () => {
+  const payload = await coverageRun(realReport('coverage-diff-met-whole-below.json'), { diff: 'a..b', badge: true }, 0);
+  assert.ok(payload.badge.coverage, 'an unfiltered run keeps the badge');
+  assert.doesNotMatch(payload.summary, /coverage badge is not updated/);
+});
+
+test('coverage mode: a narrowed run without badge: true says nothing about the badge', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-met.json'),
+    { diff: 'a..b', affectedBy: 'true', badge: false },
+    0
+  );
+  assert.equal('badge' in payload, false);
+  assert.doesNotMatch(payload.summary, /coverage badge is not updated/);
 });
 
 test('analyze mode: diff: true on a push whose before is gone diffs the commit against its parent', async () => {
@@ -1067,3 +1353,55 @@ for (const [label, inputs, message] of [
     assert.deepEqual(posts, []);
   });
 }
+
+// ---------------------------------------------------------------------------
+// no-verdict runs, and a diff-only report without --affected-by
+// ---------------------------------------------------------------------------
+
+test('coverage mode: an incomplete run (exit 2) with a reason names it in title and failure, and has no verdict outputs', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-real-cli-1.9.0-incomplete.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    2
+  );
+  assert.equal(payload.title, 'No coverage data: the test run wrote no coverage files');
+  assert.match(failures[0], /Reason: the test run wrote no coverage files\./);
+  assert.match(failures[0], /fix the cause named in the reason/);
+  assert.doesNotMatch(failures[0], /failing tests shown above/);
+  for (const name of ['coverage-percent', 'coverage-met', 'diff-coverage-percent', 'diff-coverage-met']) {
+    assert.equal(outputs[name], '', name);
+  }
+});
+
+test('coverage mode: a failed completeness check (exit 3) keeps its numbers out of the verdict outputs', async () => {
+  await coverageRun(
+    realReport('coverage-real-cli-1.9.0-cross-check-failed.json'),
+    { diff: 'a..b', affectedBy: 'true' },
+    3
+  );
+  for (const name of ['coverage-percent', 'coverage-met', 'diff-coverage-percent', 'diff-coverage-met']) {
+    assert.equal(outputs[name], '', name);
+  }
+});
+
+test('coverage mode: a plain exit 2 without a reason keeps the generic failure and title', async () => {
+  const payload = await coverageRun(coverageReport(), { failOnThreshold: true }, 2);
+  assert.equal(payload.title, 'Tests failed or coverage was incomplete');
+  assert.doesNotMatch(failures[0], /Reason:/);
+  assert.match(failures[0], /fix the failing tests shown above/);
+  assert.equal(outputs['coverage-met'], '');
+});
+
+// coverage-derived-diff-only.json is derived by hand from the real 1.9.0 diff-below report:
+// no gates.selection and no coverageScope, as a diff run without --affected-by writes it.
+test('coverage mode: a diff-only report without affected-by fails as the changed-lines gate', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-derived-diff-only.json'),
+    { diff: 'a..b', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.title, 'Diff coverage 25.00% (1/4 changed lines) is below the required minimum');
+  assert.match(failures[0], /^Changed-line coverage is 25\.00% \(1 of 4 changed lines\)/);
+  assert.doesNotMatch(payload.summary, /affected selection/);
+  assert.equal(outputs['diff-coverage-met'], 'false');
+});

@@ -323,3 +323,15 @@ test('titleFor: zero findings → "No findings"', () => {
 test('titleFor: summarizes the counts', () => {
   assert.equal(titleFor(counts(1, 2, 3)), '1 error, 2 warning, 3 info');
 });
+
+test('displayPath: the workspace root itself is shown as a dot', () => {
+  const ws = path.resolve('/tmp', 'ws');
+  assert.equal(displayPath(ws, ws), '.');
+});
+
+test('displayPath: a path outside the workspace keeps its absolute form', () => {
+  const ws = path.resolve('/tmp', 'ws');
+  assert.equal(displayPath(path.resolve('/tmp', 'other', 'b.cs'), ws).replace(/^[A-Za-z]:/, ''), '/tmp/other/b.cs');
+  assert.equal(displayPath(path.resolve('/tmp', 'ws2', 'b.cs'), ws).replace(/^[A-Za-z]:/, ''), '/tmp/ws2/b.cs');
+  assert.equal(displayPath(path.resolve('/tmp'), ws).replace(/^[A-Za-z]:/, ''), '/tmp');
+});

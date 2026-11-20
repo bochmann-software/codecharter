@@ -7,6 +7,66 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Added
+
+- Coverage mode with `affected-by: true` (CLI 1.9.0+ and the `coverageScope`
+  and `gates` sections of its report): the Test selection block says when the
+  selection escalated to every test project, with the CLI's reasons, and warns
+  about affected projects that no test project measured
+  (`gates.selection.unmeasuredProjects`).
+- Coverage mode: a run without data (exit code 3) names the CLI's
+  `summary.noDataReason` in the summary, the check title and the failure message:
+  no coverage files, a failed test project, a failed completeness check, or no
+  measurable lines.
+- Coverage mode with `affected-by: true`: the summary and the pull request
+  comment gain a **Test selection** block naming how many test projects ran
+  and, when the CLI's JSON report carries `coverageScope`, which ones were
+  skipped and the changed file a failed completeness check found without
+  coverage data (also named in the failure message). The overall percent is
+  labelled as coverage of the affected selection instead of the whole solution.
+- Coverage mode: when the CLI fails the run on the overall coverage of the
+  selection although the changed lines met their minimum, the check title,
+  footer and failure message name that gate instead of the changed-lines one.
+- README: a pull request and push workflow that narrows pull requests with
+  `affected-by` and keeps full runs on pushes.
+- Coverage mode with `affected-by: true` (CLI 1.9.0+): both gates of the run,
+  the changed lines and the overall coverage of the affected selection, are read
+  from the report's `gates` section. The summary gains a **Gates** table with
+  each gate's measured lines, covered lines, percent, required minimum and
+  verdict. When both gates fail, the title, footer and failure message name both.
+
+### Changed
+
+- Coverage mode: a run without a verdict (the CLI wrote a `noDataReason`, or
+  exited with code 2 or 3) now sets `coverage-percent`, `coverage-met`,
+  `diff-coverage-percent` and `diff-coverage-met` to empty, instead of a
+  number or `"false"`. Empty means no verdict and is distinct from `"false"`.
+  This also applies to reports of CLI 1.8.x. A workflow that checks
+  `coverage-met == 'false'` (for example after `continue-on-error`) should also
+  handle `coverage-met == ''`. Such a run sends no coverage badge. A run with a
+  `noDataReason`, a null percent or exit code 3 also shows the no-data card in
+  its summary and pull request comment.
+- Coverage mode: an incomplete run (exit code 2) with a `noDataReason` names the
+  reason in the check title and the failure message; paths outside the
+  workspace are shown as the CLI wrote them, and the workspace root as `.`;
+  escalation reasons are capped like the other lists; a plain `diff` run
+  without a `gates` section reads exit code 1 as the changed-lines gate.
+- Coverage mode: the verdicts come from the report's `gates` section and
+  `summary.hasMetTotalThreshold`, never from the summary percent. A percent the
+  report carries as null, such as a changed-lines gate over zero measured lines,
+  renders as `–` instead of `unknown`, 0 % or 100 %. Only exit code 1 fails a
+  gate; exit codes 2 and 3 are reported as before, whatever the gates section says.
+- Coverage mode: a run narrowed by `affected-by` no longer sends or updates the
+  coverage badge; the badge comes only from unfiltered runs. The job summary and
+  the pull request comment say so in one line when `badge: true` is set.
+- Coverage mode: which gate failed is read from the report's `gates` section
+  when the CLI writes it, instead of inferring it from the exit code. The exit
+  code heuristic remains only for CLIs without that section.
+- Coverage mode: `affected-by` and `fail-on-unmeasured-projects` accept only
+  `true` or `false` (any case, or empty). Any other value, such as `yes`, now
+  fails the step before the CLI download instead of silently counting as
+  `false`.
+
 ## [1.12.0] - 2026-11-19
 
 ### Added

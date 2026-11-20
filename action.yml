@@ -212,9 +212,13 @@ inputs:
       files run. The range is exactly the one passed as `--git-ref`, so it needs
       `diff: true` (or a git ref range); with `diff` off, or on an event where
       `diff: true` finds no range, the step fails. Needs `actions/checkout` with
-      `fetch-depth: 0` so the merge base is in the checkout. Requires CLI 1.5.3 or
-      newer (1.8.0 or newer for the most precise test selection); the action does
-      not check the CLI version, so pin `version` accordingly.
+      `fetch-depth: 0` so the merge base is in the checkout. A value other than
+      `true` or `false` fails the step. The summary then names the selection: the
+      test projects that ran and, when the CLI reports them (`coverageScope`), the
+      ones it skipped, and the overall coverage is labelled as measured over that
+      selection. Requires CLI 1.5.3 or newer (1.8.0 or newer for the most precise
+      test selection); the action does not check the CLI version, so pin `version`
+      accordingly.
     required: false
     default: 'false'
   fail-on-unmeasured-projects:
@@ -222,7 +226,7 @@ inputs:
       Coverage mode only. When `true`, passes `--fail-on-unmeasured-projects`, so
       changed production projects that no test project references fail the gate.
       Like `affected-by` it needs `diff: true` (or a git ref range) and fails the
-      step otherwise. Requires CLI 1.8.0 or newer; the action does not check the
+      step otherwise, and a value other than `true` or `false` fails the step. Requires CLI 1.8.0 or newer; the action does not check the
       CLI version, so an older CLI fails with its own unknown-option error.
     required: false
     default: 'false'
@@ -257,11 +261,13 @@ inputs:
 
 outputs:
   coverage-percent:
-    description: Line-coverage percent from the coverage run; empty when no coverage data was produced.
+    description: Line-coverage percent from the coverage run; empty when the run has no verdict (no coverage data, or exit code 2 or 3).
   coverage-met:
     description: |
-      "true" when whole-solution coverage met the required minimum. Under a
-      changed-lines gate this is only reported; `diff-coverage-met` decides.
+      "true" when whole-solution coverage met the required minimum, "false" when
+      it missed; empty when the run has no verdict (no coverage data, or exit code
+      2 or 3). Under a changed-lines gate this is only reported;
+      `diff-coverage-met` decides.
   coverage-uncovered-regions:
     description: Number of uncovered regions in the coverage report.
   diff-coverage-percent:
@@ -269,7 +275,7 @@ outputs:
       Coverage percent of the changed lines. Empty when no changed-lines gate
       ran, and when the range changed no measurable line.
   diff-coverage-met:
-    description: '"true" when the changed lines met the required minimum; empty when no changed-lines gate ran.'
+    description: '"true" when the changed lines met the required minimum; empty when no changed-lines gate ran or the run has no verdict.'
   diff-coverage-changed-lines:
     description: Number of measurable changed lines the gate checked (0 is a pass over nothing); empty when no gate ran.
   diff-coverage-covered-lines:

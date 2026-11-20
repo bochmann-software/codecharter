@@ -178,3 +178,11 @@ test('withBadge: omits the property entirely without the opt-in', () => {
   assert.deepEqual(withIt, { checkName: 'CodeCharter', badge: { branch: 'main' } });
   assert.equal('badge' in base, false, 'the original payload is not mutated');
 });
+
+test('coverageBadgePayload: a run without a verdict (exit 2 or 3) sends no coverage but keeps the test counts', () => {
+  const summary = coverageSummary(coverageReport());
+  assert.notEqual(coverageBadgePayload(summary).coverage, null);
+  const badge = coverageBadgePayload(summary, true);
+  assert.equal(badge.coverage, null);
+  assert.deepEqual(badge.testCounts, coverageBadgePayload(summary).testCounts);
+});

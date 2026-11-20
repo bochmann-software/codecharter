@@ -70,8 +70,8 @@ jobs:
 | `coverage-root` | no | `''` (repo root) | Coverage mode only. Directory tree searched for test projects |
 | `min-coverage` | no | `''` (repo config) | Coverage mode only. Minimum required line coverage (0-100), e.g. `99.5`. Overrides `coverage.minimum-percent` from `.codecharter/config.yml` for this run |
 | `min-diff-coverage` | no | `''` (effective `min-coverage`) | Coverage mode only. Minimum required coverage of the changed lines (0-100), e.g. `100`. Needs `diff`; the changed-lines gate then decides the result and whole-solution coverage is only reported (see below) |
-| `affected-by` | no | `false` | Coverage mode only. Also pass `--affected-by <range>` so only the test projects reachable from the changed files run. Uses exactly the range passed as `--git-ref`, so it needs `diff`; the step fails when `diff` is off or resolves no range. Needs `actions/checkout` with `fetch-depth: 0`. Requires CLI 1.5.3+ (1.8.0+ recommended); the action does not check the CLI version, because it only knows it for exact pins or a resolved manifest, so pin `version` accordingly |
-| `fail-on-unmeasured-projects` | no | `false` | Coverage mode only. Pass `--fail-on-unmeasured-projects`: changed production projects that no test project references fail the gate. Needs `diff`, same validation as `affected-by`. Requires CLI 1.8.0+; the action does not check the CLI version, so an older CLI fails with its own unknown-option error |
+| `affected-by` | no | `false` | Coverage mode only. Also pass `--affected-by <range>` so only the test projects reachable from the changed files run. Uses exactly the range passed as `--git-ref`, so it needs `diff`; the step fails when `diff` is off or resolves no range, and on a value other than `true`/`false`. See [Testing only the affected projects](#testing-only-the-affected-projects). Needs `actions/checkout` with `fetch-depth: 0`. Requires CLI 1.9.0+ for the double gate (the affected selection and the changed lines both decide the run, read from the report's `gates` section); older CLIs still run, but the action then reads the verdict from the exit code. The action does not check the CLI version, because it only knows it for exact pins or a resolved manifest, so pin `version` accordingly |
+| `fail-on-unmeasured-projects` | no | `false` | Coverage mode only. Pass `--fail-on-unmeasured-projects`: changed production projects that no test project references fail the gate. Needs `diff`, same validation as `affected-by`, including the `true`/`false` check. Requires CLI 1.8.0+; the action does not check the CLI version, so an older CLI fails with its own unknown-option error |
 | `skip-tests` | no | `false` | Coverage mode only. Analyze the coverage files already present under the results root instead of running the tests |
 | `results-root` | no | `''` (CLI default) | Coverage mode only. Directory for test and coverage artifacts |
 | `fail-on-threshold` | no | `true` | Coverage mode only. Set `false` to report coverage below the minimum without failing the step (with `diff`, the changed-lines minimum). Failing tests, missing data and config errors still fail |
@@ -170,6 +170,82 @@ CLI cannot resolve.
 failing, exactly as it does for the whole-solution minimum. The `badge` payload
 keeps reporting whole-solution coverage. Requires a CLI with changed-line
 coverage; the default `version: latest` satisfies it.
+
+#### Testing only the affected projects
+
+`affected-by: true` narrows the run on top of the changed-lines gate: the action
+passes `--affected-by` with exactly the range it passes as `--git-ref`, and the
+CLI runs only the test projects the change reaches through the project graph
+instead of every test project. A typical setup narrows pull requests and keeps
+full runs on pushes to the main branch:
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the merge base must be in the checkout
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: bochmann-software/codecharter@v1
+        with:
+          mode: coverage
+          diff: ${{ github.event_name == 'pull_request' }}
+          affected-by: ${{ github.event_name == 'pull_request' }}
+          min-diff-coverage: 100
+          api-key: ${{ secrets.CODECHARTER_API_KEY }}
+```
+
+On the push both inputs are `false`, so every test project runs and the
+whole-solution minimum decides. `affected-by` without a range (with `diff` off,
+or on an event where `diff: true` resolves none, such as `workflow_dispatch`)
+fails the step instead of quietly running everything, which is why the example
+switches both inputs with the same expression.
+
+A narrowed run measures only what the selected test projects load, so the
+summary labels the overall percent as coverage of the **affected selection**,
+not of the whole solution, and adds a **Test selection** block: how many test
+projects ran and, when the CLI reports its selection (`coverageScope` in the
+JSON report), which ones it skipped. When the CLI's completeness check finds a
+changed file without any coverage data in the selection, the block and the
+failure message name that file.
+
+With `affected-by` the run has two gates, and both are always active (CLI
+1.9.0+):
+
+- the **changed-lines gate**, `min-diff-coverage` as described above;
+- the **affected-selection gate**: the overall coverage of the selected test
+  projects, measured over the production lines of the affected projects only.
+  Its minimum comes from `min-coverage` (or `coverage.minimum-percent` in
+  `.codecharter/config.yml`), and is 100 % when neither is set.
+
+The CLI's report states each gate in a `gates` section, and the summary shows
+both in a **Gates** table (measured lines, covered, percent, required minimum,
+met). The run fails when at least one gate fails, and the check title, footer
+and failure message name the gate or gates that did. When only the selection
+gate fails, a title such as `Coverage 97.50% is below the required minimum
+(changed lines met)` points at the uncovered regions. When both fail, the
+message names both. `fail-on-threshold: false` softens each gate the same way.
+Without the `gates` section (an older CLI) the action reads the verdict from the
+exit code instead.
+
+The selection block also reports two things that change what a green run means.
+When the CLI widens the selection to every test project (`coverageScope.escalated`),
+it says so and gives the CLI's reasons. When an affected project no test project
+measured (`gates.selection.unmeasuredProjects`), it warns and names that project.
+A run without data (exit code 3) writes a minimal report; the summary and the
+failure message then state its `noDataReason`: no coverage files, a test project
+that failed, a failed completeness check, or no measurable lines. A gate over
+zero changed lines passes, and its percent shows as `–`, never as 0 % or 100 %.
+Only exit code 1 means a gate failed; exit codes 2 and 3 do not.
 
 ### Solution auto-discovery
 
@@ -376,7 +452,9 @@ it).
 ### Repository badges (opt-in)
 
 Set `badge: true` to let the portal serve a coverage or findings badge for the
-repository. It is **off by default**: without it the check report the action
+repository. A coverage run narrowed by `affected-by` does not send or update the
+badge, because it measures only the affected test projects; only unfiltered runs
+update it. It is **off by default**: without it the check report the action
 already posts carries no numbers to store, and the portal has nothing to render
 a badge from.
 
@@ -415,11 +493,11 @@ sending the numbers in the first place.
 | `findings-info` | Number of info-level findings |
 | `sarif-path` | Path to the generated SARIF file, if `sarif-output` was set. Unset when the run is inconclusive (the file is removed) |
 | `inconclusive` | `"true"` when the run was inconclusive (the rule sources could not be established), `"false"` otherwise; also `"true"` for a run without a report whose log names it inconclusive (no rule source at all), and empty for any other run without a report |
-| `coverage-percent` | Coverage mode: line-coverage percent; empty when no coverage data was produced |
-| `coverage-met` | Coverage mode: `"true"` when whole-solution coverage met the required minimum (only reported under a changed-lines gate) |
+| `coverage-percent` | Coverage mode: line-coverage percent; empty when the run has no verdict (no coverage data, or exit code 2 or 3) |
+| `coverage-met` | Coverage mode: `"true"` when whole-solution coverage met the required minimum (only reported under a changed-lines gate), `"false"` when it missed; empty when the run has no verdict (no coverage data, or exit code 2 or 3), which is distinct from `"false"` |
 | `coverage-uncovered-regions` | Coverage mode: number of uncovered regions in the report |
-| `diff-coverage-percent` | Coverage mode with `diff`: coverage percent of the changed lines; empty when no changed-lines gate ran or the range changed no measurable line |
-| `diff-coverage-met` | Coverage mode with `diff`: `"true"` when the changed lines met the required minimum; empty when no changed-lines gate ran |
+| `diff-coverage-percent` | Coverage mode with `diff`: coverage percent of the changed lines; empty when no changed-lines gate ran, the range changed no measurable line, or the run has no verdict |
+| `diff-coverage-met` | Coverage mode with `diff`: `"true"` when the changed lines met the required minimum; empty when no changed-lines gate ran or the run has no verdict (no coverage data, or exit code 2 or 3) |
 | `diff-coverage-changed-lines` | Coverage mode with `diff`: number of measurable changed lines the gate checked (`0` is a pass over nothing); empty when no gate ran |
 | `diff-coverage-covered-lines` | Coverage mode with `diff`: number of those changed lines that are covered; empty when no gate ran |
 | `diff-coverage-uncovered-regions` | Coverage mode with `diff`: number of uncovered changed regions; empty when no gate ran |

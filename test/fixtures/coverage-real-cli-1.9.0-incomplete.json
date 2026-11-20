@@ -1,0 +1,54 @@
+{
+  "summary": {
+    "totalLines": 0,
+    "coveredLines": 0,
+    "percent": null,
+    "minimumRequiredPercent": 100,
+    "hasMetThreshold": false,
+    "hasMetTotalThreshold": false,
+    "noDataReason": "noCoverageFiles",
+    "minimumRequiredPercentSource": "default",
+    "unresolvedSourceFileCount": 0,
+    "coverageFilesOldestUtc": null,
+    "coverageFilesNewestUtc": null
+  },
+  "testResults": [],
+  "uncoveredRegions": [],
+  "diffCoverage": {
+    "gitRef": "main..HEAD",
+    "measurableChangedLines": 0,
+    "coveredChangedLines": 0,
+    "percent": null,
+    "requiredPercent": 100,
+    "thresholdProvenance": "inherited",
+    "met": false,
+    "uncoveredChangedRegions": [],
+    "unmeasuredProjectFiles": [],
+    "unmeasuredFilesOutsideRoot": []
+  },
+  "gates": {
+    "diff": {
+      "measuredLines": 0,
+      "coveredLines": 0,
+      "percent": null,
+      "requiredPercent": 100,
+      "met": false
+    },
+    "selection": {
+      "measuredLines": 0,
+      "coveredLines": 0,
+      "percent": null,
+      "requiredPercent": 100,
+      "met": false,
+      "unmeasuredProjects": ["/home/runner/work/sample/sample/src/LibA"]
+    }
+  },
+  "coverageScope": {
+    "selectedSuites": ["LibA.Tests"],
+    "skippedSuites": ["LibB.Tests"],
+    "crossCheckFailureFile": null,
+    "escalated": false,
+    "escalationReasons": []
+  },
+  "uninstrumentedModules": []
+}

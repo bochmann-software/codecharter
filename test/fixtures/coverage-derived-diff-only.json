@@ -1,0 +1,78 @@
+{
+  "summary": {
+    "totalLines": 4,
+    "coveredLines": 1,
+    "percent": 25,
+    "minimumRequiredPercent": 100,
+    "hasMetThreshold": false,
+    "hasMetTotalThreshold": false,
+    "noDataReason": null,
+    "minimumRequiredPercentSource": "default",
+    "unresolvedSourceFileCount": 0,
+    "coverageFilesOldestUtc": "2026-11-20T21:13:35.828034Z",
+    "coverageFilesNewestUtc": "2026-11-20T21:13:35.828034Z"
+  },
+  "testResults": [
+    {
+      "project": "LibA.Tests",
+      "exitCode": 0,
+      "succeeded": true,
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "failureReason": null,
+      "failedTests": [],
+      "failedTestCount": 0
+    }
+  ],
+  "uncoveredRegions": [
+    {
+      "file": "/home/runner/work/sample/sample/src/LibA/A.cs",
+      "relativeFile": "src/LibA/A.cs",
+      "method": "Sub",
+      "complexity": 1,
+      "lines": [3, 4, 5],
+      "snippet": "1: namespace LibA; public static class A {\n2:  public static int Add(int a,int b){ return a+b; }\n3:  public static int Sub(int a,int b){\n4:    return a-b;\n5:  }\n6: }",
+      "snippetStartLine": 1,
+      "snippetEndLine": 6,
+      "reason": "3 consecutive lines never executed."
+    }
+  ],
+  "diffCoverage": {
+    "gitRef": "main..HEAD",
+    "measurableChangedLines": 4,
+    "coveredChangedLines": 1,
+    "percent": 25,
+    "requiredPercent": 100,
+    "thresholdProvenance": "inherited",
+    "met": false,
+    "uncoveredChangedRegions": [
+      {
+        "file": "/home/runner/work/sample/sample/src/LibA/A.cs",
+        "relativeFile": "src/LibA/A.cs",
+        "method": "Sub",
+        "complexity": 1,
+        "lines": [3, 4, 5],
+        "snippet": "1: namespace LibA; public static class A {\n2:  public static int Add(int a,int b){ return a+b; }\n3:  public static int Sub(int a,int b){\n4:    return a-b;\n5:  }\n6: }",
+        "snippetStartLine": 1,
+        "snippetEndLine": 6,
+        "reason": "3 consecutive lines never executed."
+      }
+    ],
+    "unmeasuredProjectFiles": [],
+    "unmeasuredFilesOutsideRoot": []
+  },
+  "gates": {
+    "diff": {
+      "measuredLines": 4,
+      "coveredLines": 1,
+      "percent": 25,
+      "requiredPercent": 100,
+      "met": false
+    },
+    "selection": null
+  },
+  "uninstrumentedModules": [],
+  "_derived": "Derived from coverage-real-cli-1.9.0-diff-below.json by hand: a diff-only run (no --affected-by), so gates.selection is null and coverageScope is absent. Not written by a real CLI."
+}
