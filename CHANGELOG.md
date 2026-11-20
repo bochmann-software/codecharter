@@ -7,6 +7,27 @@ the latest release in its line.
 
 ## [Unreleased]
 
+### Added
+
+- Coverage mode with `affected-by: true`: the summary and the pull request
+  comment gain a **Test selection** block naming how many test projects ran
+  and, when the CLI's JSON report carries `coverageScope`, which ones were
+  skipped and the changed file a failed completeness check found without
+  coverage data (also named in the failure message). The overall percent is
+  labelled as coverage of the affected selection instead of the whole solution.
+- Coverage mode: when the CLI fails the run on the overall coverage of the
+  selection although the changed lines met their minimum, the check title,
+  footer and failure message name that gate instead of the changed-lines one.
+- README: a pull request and push workflow that narrows pull requests with
+  `affected-by` and keeps full runs on pushes.
+
+### Changed
+
+- Coverage mode: `affected-by` and `fail-on-unmeasured-projects` accept only
+  `true` or `false` (any case, or empty). Any other value, such as `yes`, now
+  fails the step before the CLI download instead of silently counting as
+  `false`.
+
 ## [1.12.0] - 2026-11-19
 
 ### Added

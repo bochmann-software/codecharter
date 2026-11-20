@@ -70,8 +70,8 @@ jobs:
 | `coverage-root` | no | `''` (repo root) | Coverage mode only. Directory tree searched for test projects |
 | `min-coverage` | no | `''` (repo config) | Coverage mode only. Minimum required line coverage (0-100), e.g. `99.5`. Overrides `coverage.minimum-percent` from `.codecharter/config.yml` for this run |
 | `min-diff-coverage` | no | `''` (effective `min-coverage`) | Coverage mode only. Minimum required coverage of the changed lines (0-100), e.g. `100`. Needs `diff`; the changed-lines gate then decides the result and whole-solution coverage is only reported (see below) |
-| `affected-by` | no | `false` | Coverage mode only. Also pass `--affected-by <range>` so only the test projects reachable from the changed files run. Uses exactly the range passed as `--git-ref`, so it needs `diff`; the step fails when `diff` is off or resolves no range. Needs `actions/checkout` with `fetch-depth: 0`. Requires CLI 1.5.3+ (1.8.0+ recommended); the action does not check the CLI version, because it only knows it for exact pins or a resolved manifest, so pin `version` accordingly |
-| `fail-on-unmeasured-projects` | no | `false` | Coverage mode only. Pass `--fail-on-unmeasured-projects`: changed production projects that no test project references fail the gate. Needs `diff`, same validation as `affected-by`. Requires CLI 1.8.0+; the action does not check the CLI version, so an older CLI fails with its own unknown-option error |
+| `affected-by` | no | `false` | Coverage mode only. Also pass `--affected-by <range>` so only the test projects reachable from the changed files run. Uses exactly the range passed as `--git-ref`, so it needs `diff`; the step fails when `diff` is off or resolves no range, and on a value other than `true`/`false`. See [Testing only the affected projects](#testing-only-the-affected-projects). Needs `actions/checkout` with `fetch-depth: 0`. Requires CLI 1.5.3+ (1.8.0+ recommended); the action does not check the CLI version, because it only knows it for exact pins or a resolved manifest, so pin `version` accordingly |
+| `fail-on-unmeasured-projects` | no | `false` | Coverage mode only. Pass `--fail-on-unmeasured-projects`: changed production projects that no test project references fail the gate. Needs `diff`, same validation as `affected-by`, including the `true`/`false` check. Requires CLI 1.8.0+; the action does not check the CLI version, so an older CLI fails with its own unknown-option error |
 | `skip-tests` | no | `false` | Coverage mode only. Analyze the coverage files already present under the results root instead of running the tests |
 | `results-root` | no | `''` (CLI default) | Coverage mode only. Directory for test and coverage artifacts |
 | `fail-on-threshold` | no | `true` | Coverage mode only. Set `false` to report coverage below the minimum without failing the step (with `diff`, the changed-lines minimum). Failing tests, missing data and config errors still fail |
@@ -170,6 +170,60 @@ CLI cannot resolve.
 failing, exactly as it does for the whole-solution minimum. The `badge` payload
 keeps reporting whole-solution coverage. Requires a CLI with changed-line
 coverage; the default `version: latest` satisfies it.
+
+#### Testing only the affected projects
+
+`affected-by: true` narrows the run on top of the changed-lines gate: the action
+passes `--affected-by` with exactly the range it passes as `--git-ref`, and the
+CLI runs only the test projects the change reaches through the project graph
+instead of every test project. A typical setup narrows pull requests and keeps
+full runs on pushes to the main branch:
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the merge base must be in the checkout
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: bochmann-software/codecharter@v1
+        with:
+          mode: coverage
+          diff: ${{ github.event_name == 'pull_request' }}
+          affected-by: ${{ github.event_name == 'pull_request' }}
+          min-diff-coverage: 100
+          api-key: ${{ secrets.CODECHARTER_API_KEY }}
+```
+
+On the push both inputs are `false`, so every test project runs and the
+whole-solution minimum decides. `affected-by` without a range (with `diff` off,
+or on an event where `diff: true` resolves none, such as `workflow_dispatch`)
+fails the step instead of quietly running everything, which is why the example
+switches both inputs with the same expression.
+
+A narrowed run measures only what the selected test projects load, so the
+summary labels the overall percent as coverage of the **affected selection**,
+not of the whole solution, and adds a **Test selection** block: how many test
+projects ran and, when the CLI reports its selection (`coverageScope` in the
+JSON report), which ones it skipped. When the CLI's completeness check finds a
+changed file without any coverage data in the selection, the block and the
+failure message name that file.
+
+The changed-lines gate decides the run as described above. When the CLI also
+gates the overall coverage of the selection and fails on it while the changed
+lines are covered, the action reports that gate as the reason: a red overall
+badge, a title such as `Coverage 97.50% is below the required minimum (changed
+lines met)` and a failure message that points at the uncovered regions.
+`fail-on-threshold: false` softens that gate like the others.
 
 ### Solution auto-discovery
 

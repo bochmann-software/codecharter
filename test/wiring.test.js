@@ -984,6 +984,152 @@ test('coverage mode: run() hands the diff and min-diff-coverage inputs to the CL
   assert.match(failures[0], /^Changed-line coverage is 60\.00%/);
 });
 
+// ---------------------------------------------------------------------------
+// affected-by in coverage mode
+// ---------------------------------------------------------------------------
+
+test('coverage mode: affected-by on a pull request passes the one range as --git-ref and --affected-by', async () => {
+  github.context.eventName = 'pull_request';
+  github.context.payload = { pull_request: { number: 7, base: { sha: 'BASESHA' }, head: { sha: 'HEADSHA' } } };
+  const payload = await coverageRun(
+    realReport('coverage-affected-no-scope.json'),
+    { diff: 'true', minDiffCoverage: '100', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.deepEqual(cliArgs, [
+    ...coverageHead(),
+    '--git-ref',
+    'MERGEBASE..HEADSHA',
+    '--min-diff-coverage',
+    '100',
+    '--affected-by',
+    'MERGEBASE..HEADSHA',
+  ]);
+  assert.equal(payload.conclusion, 'success');
+  assert.match(payload.summary, /The CLI did not report which test projects it skipped/);
+  assert.match(payload.summary, /affected selection reported only/);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: without affected-by the summary has no selection block', async () => {
+  const payload = await coverageRun(realReport('coverage-affected-no-scope.json'), { diff: 'a..b' }, 0);
+  assert.doesNotMatch(payload.summary, /Test selection/);
+  assert.match(payload.summary, /whole solution reported only/);
+});
+
+test('coverage mode: a missed overall minimum with met changed lines fails as the overall gate', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-scope-selection-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Coverage 70.00% is below the required minimum (changed lines met)');
+  assert.match(payload.summary, /Ran 1 of 3 test project\(s\)/);
+  assert.deepEqual(failures, [
+    'The changed lines are covered, but overall coverage is 70.00%, below the required 100% (threshold from ' +
+      '`default`). What to do: cover the regions listed above, or pass a lower `min-coverage`.',
+  ]);
+});
+
+test('coverage mode: fail-on-threshold: false reports a missed overall minimum without failing', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-scope-selection-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: false },
+    1
+  );
+  assert.equal(payload.conclusion, 'neutral');
+  assert.deepEqual(failures, []);
+  assert.ok(infos.some((m) => /^The changed lines are covered, but overall coverage is 70\.00%.*Not failing/.test(m)));
+});
+
+test('coverage mode: a missed overall minimum with an unknown percent says so', async () => {
+  const report = realReport('coverage-affected-scope-selection-below.json');
+  report.summary.percent = null;
+  report.summary.minimumRequiredPercent = null;
+  await coverageRun(report, { diff: 'a..b', affectedBy: 'true', failOnThreshold: true }, 1);
+  assert.match(failures[0], /overall coverage is unknown, below the required 100% /);
+});
+
+test('coverage mode: a failed completeness check names the changed file without coverage data', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-cross-check-failed.json'),
+    { diff: 'a..b', affectedBy: 'true' },
+    3
+  );
+  assert.equal(payload.title, 'No coverage data');
+  assert.match(payload.summary, /Completeness check failed/);
+  assert.equal(failures.length, 1);
+  assert.match(
+    failures[0],
+    /^The `affected-by` completeness check failed: the changed file \S*src\/App\/Widget\.cs has no/
+  );
+});
+
+test('coverage mode: exit 3 without a coverageScope keeps the generic no-data message', async () => {
+  await coverageRun(null, { diff: 'a..b', affectedBy: 'true' }, 3);
+  assert.match(failures[0], /^The coverage run produced no coverage data/);
+});
+
+// Runs run() in coverage mode with the given inputs against a stubbed download
+// and a CLI that writes the given report and exits 0.
+async function coverageRunViaRun(inputs, report) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wiring-aff-'));
+  process.env.GITHUB_WORKSPACE = workspace;
+  process.env['INPUT_API-KEY'] = 'KEY';
+  process.env.INPUT_CACHE = 'false';
+  process.env.INPUT_MODE = 'coverage';
+  Object.assign(process.env, inputs);
+  HttpClient.prototype.get = async () => {
+    const stream = Readable.from(['archive']);
+    stream.statusCode = 200;
+    stream.headers = {};
+    return { message: stream, readBody: async () => '' };
+  };
+  const extract = async (_archive, dir) => {
+    fs.writeFileSync(path.join(dir, process.platform === 'win32' ? 'codecharter.exe' : 'codecharter'), '');
+    return dir;
+  };
+  tc.extractTar = extract;
+  tc.extractZip = extract;
+  exec.exec = async (cmd, args) => {
+    cliArgs = args;
+    fs.writeFileSync(args[args.indexOf('--output-file') + 1], JSON.stringify(report));
+    return 0;
+  };
+  try {
+    await run();
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+}
+
+test('coverage mode: run() hands affected-by and fail-on-unmeasured-projects to the CLI', async () => {
+  await coverageRunViaRun(
+    {
+      INPUT_DIFF: 'origin/main..HEAD',
+      'INPUT_AFFECTED-BY': 'true',
+      'INPUT_FAIL-ON-UNMEASURED-PROJECTS': 'true',
+    },
+    realReport('coverage-affected-no-scope.json')
+  );
+  assert.deepEqual(cliArgs.slice(4), [
+    '--git-ref',
+    'origin/main..HEAD',
+    '--affected-by',
+    'origin/main..HEAD',
+    '--fail-on-unmeasured-projects',
+  ]);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: run() rejects an invalid affected-by before the CLI download', async () => {
+  await coverageRunViaRun({ INPUT_DIFF: 'origin/main..HEAD', 'INPUT_AFFECTED-BY': 'yes' }, {});
+  assert.equal(cliArgs, null, 'the CLI never ran');
+  assert.deepEqual(posts, []);
+  assert.deepEqual(failures, ['Invalid `affected-by` "yes". Use `true` or `false`.']);
+});
+
 test('analyze mode: diff: true on a push whose before is gone diffs the commit against its parent', async () => {
   github.context.eventName = 'push';
   github.context.payload = { before: 'BEFORESHA', repository: { default_branch: 'main' } };

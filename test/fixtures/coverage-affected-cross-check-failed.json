@@ -1,0 +1,7 @@
+{
+  "coverageScope": {
+    "selectedSuites": ["Lib.Tests"],
+    "skippedSuites": ["App.Tests"],
+    "crossCheckFailureFile": "/home/runner/work/sample/sample/src/App/Widget.cs"
+  }
+}

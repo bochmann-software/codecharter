@@ -702,15 +702,35 @@ function isTrueInput(value) {
   return (value || '').trim().toLowerCase() === 'true';
 }
 
+/** The boolean coverage inputs that ride on the `--git-ref` range, keyed by their option name. */
+const RANGE_FLAG_INPUTS = [
+  ['affectedBy', 'affected-by'],
+  ['failOnUnmeasuredProjects', 'fail-on-unmeasured-projects'],
+];
+
 /**
  * Names the coverage inputs that hand the CLI the same range as `--git-ref`
  * (`affected-by`, `fail-on-unmeasured-projects`) and are switched on.
  */
 function enabledRangeFlags(options) {
-  const flags = [];
-  if (isTrueInput(options.affectedBy)) flags.push('affected-by');
-  if (isTrueInput(options.failOnUnmeasuredProjects)) flags.push('fail-on-unmeasured-projects');
-  return flags;
+  return RANGE_FLAG_INPUTS.filter(([key]) => isTrueInput(options[key])).map(([, name]) => name);
+}
+
+/**
+ * Rejects a range-flag input that is neither empty nor `true`/`false` (any
+ * case), so a typo such as `yes` cannot silently switch off the test
+ * selection or the unmeasured-projects gate. Returns true when every value is
+ * usable; otherwise fails the step and returns false.
+ */
+function validateRangeFlagValues(options) {
+  for (const [key, name] of RANGE_FLAG_INPUTS) {
+    const value = (options[key] || '').trim();
+    if (value && !['true', 'false'].includes(value.toLowerCase())) {
+      core.setFailed(`Invalid \`${name}\` "${value}". Use \`true\` or \`false\`.`);
+      return false;
+    }
+  }
+  return true;
 }
 
 function rangeFlagsNeedDiffMessage(flags) {
@@ -769,6 +789,7 @@ function isPercentInput(value) {
  * requests and pushes.
  */
 async function resolveCoverageDiffArgs(options, workspace) {
+  if (!validateRangeFlagValues(options)) return null;
   const rangeFlags = enabledRangeFlags(options);
   if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace, rangeFlags)) return null;
   const minDiff = (options.minDiffCoverage || '').trim();
@@ -1316,6 +1337,7 @@ function coverageSummary(report) {
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
     diff,
+    scope: coverageScopeSummary(report && report.coverageScope),
     uninstrumented: uninstrumentedModules(report),
   };
 }
@@ -1397,6 +1419,88 @@ function diffCoverageSummary(d) {
     met: d.met === true,
     regions: Array.isArray(d.uncoveredChangedRegions) ? d.uncoveredChangedRegions : [],
   };
+}
+
+/** Keeps the string entries of a list field, or yields [] when the field is not a list. */
+function stringList(value) {
+  return Array.isArray(value) ? value.filter((v) => typeof v === 'string') : [];
+}
+
+/**
+ * Flattens the report's `coverageScope` section, the `--affected-by` test
+ * selection in the shape of the MCP `run_coverage` result: the test projects
+ * the run selected and executed, the ones it skipped, and the changed file the
+ * completeness cross-check found without coverage data (null when it passed).
+ * Returns null when the report carries no such section: an unscoped run, or a
+ * CLI that does not write it yet, which the rendering then states instead of
+ * guessing a selection.
+ */
+function coverageScopeSummary(scope) {
+  if (!scope || typeof scope !== 'object') return null;
+  return {
+    selected: stringList(scope.selectedSuites),
+    skipped: stringList(scope.skippedSuites),
+    crossCheckFailureFile: typeof scope.crossCheckFailureFile === 'string' ? scope.crossCheckFailureFile : null,
+  };
+}
+
+/**
+ * True when the run failed its threshold (exit code 1) although the changed
+ * lines met theirs, so the coverage over the measured selection is what failed.
+ * Only a CLI that gates both (the double gate: the affected selection overall
+ * and the changed lines) can end that way; with the changed-lines gate alone
+ * exit code 1 always comes with a missed changed-lines minimum.
+ */
+function selectionGateFailed(summary, exitCode) {
+  return exitCode === 1 && Boolean(summary.diff) && summary.diff.met && !summary.met;
+}
+
+/**
+ * The test selection block of an `--affected-by` run: how many test projects
+ * ran and which were skipped, from the report's `coverageScope`. Without that
+ * section (a CLI that does not write it) only the projects in the test table
+ * are known, so the block says the skipped ones were not reported. Empty when
+ * the run was not narrowed.
+ */
+function affectedSelectionLines(summary, workspace, affectedBy) {
+  const scope = summary.scope;
+  if (!scope && !affectedBy) return [];
+  const lines = ['### Test selection (`affected-by`)', ''];
+  if (!scope) {
+    lines.push(
+      `Ran ${summary.projects.length} test project(s) selected by \`--affected-by\`. The CLI did not report ` +
+        'which test projects it skipped, so the selection is shown only through the test table below.',
+      ''
+    );
+    return lines;
+  }
+  const total = scope.selected.length + scope.skipped.length;
+  lines.push(
+    `Ran ${scope.selected.length} of ${total} test project(s), the ones the change affects; ` +
+      `${scope.skipped.length} skipped.`,
+    ''
+  );
+  if (scope.skipped.length > 0) {
+    const shown = scope.skipped.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
+    const more = scope.skipped.length > MAX_COMMENT_ROWS ? `, and ${scope.skipped.length - MAX_COMMENT_ROWS} more` : '';
+    lines.push(
+      '<details>',
+      '<summary>Skipped test projects</summary>',
+      '',
+      `${shown.join(', ')}${more}`,
+      '',
+      '</details>',
+      ''
+    );
+  }
+  if (scope.crossCheckFailureFile) {
+    lines.push(
+      `**Completeness check failed:** the changed file ${escapeInline(displayPath(scope.crossCheckFailureFile, workspace))} has no ` +
+        'coverage data in this selection.',
+      ''
+    );
+  }
+  return lines;
 }
 
 /** The count fields a project may carry, in the order the table shows them. */
@@ -1576,7 +1680,7 @@ const TEST_TABLE_MODES = ['full', 'failing', 'totals'];
  * a body GitHub might reject beats no report at all.
  */
 function buildCoverageComment(summary, workspace, opts) {
-  const { titleSuffix, exitCode } = opts;
+  const { titleSuffix, exitCode, affectedBy } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage — \`${titleSuffix}\`` : '## CodeCharter Coverage';
 
   if (exitCode === 3 || summary.percent === null) {
@@ -1585,6 +1689,7 @@ function buildCoverageComment(summary, workspace, opts) {
       '',
       '![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)',
       '',
+      ...affectedSelectionLines(summary, workspace, affectedBy),
       '---',
       '_No coverage data was produced, so the gate could not be evaluated._',
     ].join('\n');
@@ -1593,8 +1698,9 @@ function buildCoverageComment(summary, workspace, opts) {
   // Everything around the test table is the same at every detail level, so it is
   // built once and only the table is re-rendered while looking for a fit.
   const head = [
-    ...coverageHeadLines(summary, heading),
+    ...coverageHeadLines(summary, heading, opts),
     ...uninstrumentedLines(summary, workspace),
+    ...affectedSelectionLines(summary, workspace, affectedBy),
     ...diffCoverageLines(summary.diff, workspace, opts),
   ];
   const tail = coverageRegionLines(summary, workspace, opts);
@@ -1614,19 +1720,26 @@ function shieldBadge(alt, label, message, color) {
 
 /**
  * Heading, coverage badges and the one-line coverage verdict. Under a diff gate
- * the whole-solution numbers are only reported, which the line says, and a
- * shortfall shows yellow rather than red because it does not decide the run.
+ * the overall numbers are only reported, which the line says, and a shortfall
+ * shows yellow rather than red because it does not decide the run, unless the
+ * run failed on exactly that shortfall (see selectionGateFailed). With
+ * `--affected-by` the overall numbers cover the selected test projects only,
+ * so the line names the selection instead of the whole solution.
  */
-function coverageHeadLines(summary, heading) {
+function coverageHeadLines(summary, heading, opts = {}) {
   const lines = [heading, ''];
   const shown = summary.percent.toFixed(2);
-  const color = summary.met ? 'brightgreen' : summary.diff ? 'yellow' : 'red';
+  const decided = selectionGateFailed(summary, opts.exitCode);
+  const color = summary.met ? 'brightgreen' : summary.diff && !decided ? 'yellow' : 'red';
   let badges = shieldBadge('coverage', 'coverage', `${shown}%`, color);
   if (summary.required !== null) {
     badges += ` ${shieldBadge('required', 'required', `${summary.required}%`, 'blue')}`;
   }
   lines.push(badges, '');
-  const verdict = summary.diff ? '; whole solution reported only, the changed-lines gate decides this run' : '';
+  const overall = summary.scope || opts.affectedBy ? 'affected selection' : 'whole solution';
+  let verdict = '';
+  if (decided) verdict = `; the ${overall} missed its minimum and failed this run`;
+  else if (summary.diff) verdict = `; ${overall} reported only, the changed-lines gate decides this run`;
   lines.push(
     `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`${verdict}).`,
     ''
@@ -1730,7 +1843,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
 function coverageRegionLines(summary, workspace, opts) {
   const lines = regionTableLines(summary.regions, workspace, opts, 'uncovered region(s)');
   lines.push('---');
-  lines.push(coverageFooterLine(summary, opts.failOnThreshold));
+  lines.push(coverageFooterLine(summary, opts.failOnThreshold, opts.exitCode));
   return lines;
 }
 
@@ -1739,11 +1852,17 @@ function coverageRegionLines(summary, workspace, opts) {
  * speaks for the gate that decides the exit code: the changed-lines gate when
  * one ran, otherwise the whole-solution gate.
  */
-function coverageFooterLine(summary, failOnThreshold) {
+function coverageFooterLine(summary, failOnThreshold, exitCode) {
   if (summary.uninstrumented.length > 0) {
     return '_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._';
   }
   const diff = summary.diff;
+  if (selectionGateFailed(summary, exitCode)) {
+    if (!failOnThreshold) {
+      return '_The changed lines are covered, but overall coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._';
+    }
+    return '_The changed lines are covered, but overall coverage is below the required minimum. Cover the regions listed above before merging._';
+  }
   if (diff) {
     if (diff.met) {
       return diff.changed === 0
@@ -1783,6 +1902,9 @@ function coverageTitle(exitCode, summary) {
   if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
   if (summary.percent === null) return 'No coverage data';
   const diff = summary.diff;
+  if (selectionGateFailed(summary, exitCode)) {
+    return `Coverage ${summary.percent.toFixed(2)}% is below the required minimum (changed lines met)`;
+  }
   if (diff) {
     if (diff.changed === 0) return 'Diff coverage: no measurable changed lines (gate passed over 0 lines)';
     const shownDiff = `${diff.percent === null ? 'unknown' : `${diff.percent.toFixed(2)}%`} (${diff.covered}/${diff.changed} changed lines)`;
@@ -2160,6 +2282,7 @@ async function runCoverage(ctx) {
     titleSuffix,
     failOnThreshold: options.failOnThreshold,
     exitCode: code,
+    affectedBy: diffArgs.includes('--affected-by'),
   });
   await writeSummary(markdown);
 
@@ -2188,6 +2311,17 @@ async function runCoverage(ctx) {
   }
 
   if (code === 0) return;
+  if (selectionGateFailed(summary, code)) {
+    const detail =
+      `The changed lines are covered, but overall coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, ` +
+      `below the required ${summary.required ?? 100}% (threshold from \`${summary.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(`${detail} What to do: cover the regions listed above, or pass a lower \`min-coverage\`.`);
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
   if (code === 1 && summary.diff) {
     const d = summary.diff;
     const detail =
@@ -2231,6 +2365,15 @@ async function runCoverage(ctx) {
     core.setFailed(
       'The coverage run failed because tests failed or the coverage data was incomplete. ' +
         'What to do: fix the failing tests shown above; the gate only evaluates a complete run.'
+    );
+    return;
+  }
+  if (code === 3 && summary.scope && summary.scope.crossCheckFailureFile) {
+    core.setFailed(
+      `The \`affected-by\` completeness check failed: the changed file ` +
+        `${displayPath(summary.scope.crossCheckFailureFile, workspace)} has no coverage data in the selected test ` +
+        'projects, so this selection cannot gate it. What to do: reference its project from a test project, add ' +
+        'it to `coverage.exclude` if it is not meant to be tested, or run without `affected-by`.'
     );
     return;
   }
@@ -2339,19 +2482,22 @@ async function run() {
   }
 
   // A misconfigured changed-lines gate fails here, before the CLI download.
-  if (
-    mode === 'coverage' &&
-    !validateCoverageDiffInputs(
-      diffInput,
-      core.getInput('min-diff-coverage'),
-      workspace,
-      enabledRangeFlags({
-        affectedBy: core.getInput('affected-by'),
-        failOnUnmeasuredProjects: core.getInput('fail-on-unmeasured-projects'),
-      })
-    )
-  ) {
-    return;
+  if (mode === 'coverage') {
+    const rangeFlagInputs = {
+      affectedBy: core.getInput('affected-by'),
+      failOnUnmeasuredProjects: core.getInput('fail-on-unmeasured-projects'),
+    };
+    if (
+      !validateRangeFlagValues(rangeFlagInputs) ||
+      !validateCoverageDiffInputs(
+        diffInput,
+        core.getInput('min-diff-coverage'),
+        workspace,
+        enabledRangeFlags(rangeFlagInputs)
+      )
+    ) {
+      return;
+    }
   }
 
   // Everything lives under one temp dir so the binary and the short-lived
@@ -2769,6 +2915,10 @@ export {
   resolveCoverageGitRef,
   resolveCoverageDiffArgs,
   enabledRangeFlags,
+  validateRangeFlagValues,
+  coverageScopeSummary,
+  selectionGateFailed,
+  affectedSelectionLines,
   validateCoverageDiffInputs,
   isPercentInput,
   testCountsFor,

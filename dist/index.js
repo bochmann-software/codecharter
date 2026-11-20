@@ -70559,11 +70559,22 @@ function validateCoverageDiffInputs(diffInput, minDiffInput, workspace, rangeFla
 function isTrueInput(value) {
   return (value || "").trim().toLowerCase() === "true";
 }
+var RANGE_FLAG_INPUTS = [
+  ["affectedBy", "affected-by"],
+  ["failOnUnmeasuredProjects", "fail-on-unmeasured-projects"]
+];
 function enabledRangeFlags(options) {
-  const flags = [];
-  if (isTrueInput(options.affectedBy)) flags.push("affected-by");
-  if (isTrueInput(options.failOnUnmeasuredProjects)) flags.push("fail-on-unmeasured-projects");
-  return flags;
+  return RANGE_FLAG_INPUTS.filter(([key]) => isTrueInput(options[key])).map(([, name]) => name);
+}
+function validateRangeFlagValues(options) {
+  for (const [key, name] of RANGE_FLAG_INPUTS) {
+    const value = (options[key] || "").trim();
+    if (value && !["true", "false"].includes(value.toLowerCase())) {
+      core.setFailed(`Invalid \`${name}\` "${value}". Use \`true\` or \`false\`.`);
+      return false;
+    }
+  }
+  return true;
 }
 function rangeFlagsNeedDiffMessage(flags) {
   const names = flags.map((f) => `\`${f}\``).join(" and ");
@@ -70591,6 +70602,7 @@ function isPercentInput(value) {
   return /^\d+(\.\d+)?$/.test(value) && Number(value) <= 100;
 }
 async function resolveCoverageDiffArgs(options, workspace) {
+  if (!validateRangeFlagValues(options)) return null;
   const rangeFlags = enabledRangeFlags(options);
   if (!validateCoverageDiffInputs(options.diff, options.minDiffCoverage, workspace, rangeFlags)) return null;
   const minDiff = (options.minDiffCoverage || "").trim();
@@ -70963,6 +70975,7 @@ function coverageSummary(report) {
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
     diff,
+    scope: coverageScopeSummary(report && report.coverageScope),
     uninstrumented: uninstrumentedModules(report)
   };
 }
@@ -71013,6 +71026,57 @@ function diffCoverageSummary(d) {
     met: d.met === true,
     regions: Array.isArray(d.uncoveredChangedRegions) ? d.uncoveredChangedRegions : []
   };
+}
+function stringList(value) {
+  return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
+}
+function coverageScopeSummary(scope) {
+  if (!scope || typeof scope !== "object") return null;
+  return {
+    selected: stringList(scope.selectedSuites),
+    skipped: stringList(scope.skippedSuites),
+    crossCheckFailureFile: typeof scope.crossCheckFailureFile === "string" ? scope.crossCheckFailureFile : null
+  };
+}
+function selectionGateFailed(summary2, exitCode) {
+  return exitCode === 1 && Boolean(summary2.diff) && summary2.diff.met && !summary2.met;
+}
+function affectedSelectionLines(summary2, workspace, affectedBy) {
+  const scope = summary2.scope;
+  if (!scope && !affectedBy) return [];
+  const lines = ["### Test selection (`affected-by`)", ""];
+  if (!scope) {
+    lines.push(
+      `Ran ${summary2.projects.length} test project(s) selected by \`--affected-by\`. The CLI did not report which test projects it skipped, so the selection is shown only through the test table below.`,
+      ""
+    );
+    return lines;
+  }
+  const total = scope.selected.length + scope.skipped.length;
+  lines.push(
+    `Ran ${scope.selected.length} of ${total} test project(s), the ones the change affects; ${scope.skipped.length} skipped.`,
+    ""
+  );
+  if (scope.skipped.length > 0) {
+    const shown = scope.skipped.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
+    const more = scope.skipped.length > MAX_COMMENT_ROWS ? `, and ${scope.skipped.length - MAX_COMMENT_ROWS} more` : "";
+    lines.push(
+      "<details>",
+      "<summary>Skipped test projects</summary>",
+      "",
+      `${shown.join(", ")}${more}`,
+      "",
+      "</details>",
+      ""
+    );
+  }
+  if (scope.crossCheckFailureFile) {
+    lines.push(
+      `**Completeness check failed:** the changed file ${escapeInline(displayPath(scope.crossCheckFailureFile, workspace))} has no coverage data in this selection.`,
+      ""
+    );
+  }
+  return lines;
 }
 var COUNT_FIELDS = ["total", "passed", "failed", "skipped"];
 function testCountsFor(projects) {
@@ -71107,7 +71171,7 @@ function analysisBadgePayload(counts) {
 }
 var TEST_TABLE_MODES = ["full", "failing", "totals"];
 function buildCoverageComment(summary2, workspace, opts) {
-  const { titleSuffix, exitCode } = opts;
+  const { titleSuffix, exitCode, affectedBy } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
   if (exitCode === 3 || summary2.percent === null) {
     return [
@@ -71115,13 +71179,15 @@ function buildCoverageComment(summary2, workspace, opts) {
       "",
       "![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)",
       "",
+      ...affectedSelectionLines(summary2, workspace, affectedBy),
       "---",
       "_No coverage data was produced, so the gate could not be evaluated._"
     ].join("\n");
   }
   const head = [
-    ...coverageHeadLines(summary2, heading),
+    ...coverageHeadLines(summary2, heading, opts),
     ...uninstrumentedLines(summary2, workspace),
+    ...affectedSelectionLines(summary2, workspace, affectedBy),
     ...diffCoverageLines(summary2.diff, workspace, opts)
   ];
   const tail = coverageRegionLines(summary2, workspace, opts);
@@ -71135,16 +71201,20 @@ function buildCoverageComment(summary2, workspace, opts) {
 function shieldBadge(alt, label, message, color) {
   return `![${alt}](https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(message)}-${color}?style=flat-square)`;
 }
-function coverageHeadLines(summary2, heading) {
+function coverageHeadLines(summary2, heading, opts = {}) {
   const lines = [heading, ""];
   const shown = summary2.percent.toFixed(2);
-  const color = summary2.met ? "brightgreen" : summary2.diff ? "yellow" : "red";
+  const decided = selectionGateFailed(summary2, opts.exitCode);
+  const color = summary2.met ? "brightgreen" : summary2.diff && !decided ? "yellow" : "red";
   let badges = shieldBadge("coverage", "coverage", `${shown}%`, color);
   if (summary2.required !== null) {
     badges += ` ${shieldBadge("required", "required", `${summary2.required}%`, "blue")}`;
   }
   lines.push(badges, "");
-  const verdict = summary2.diff ? "; whole solution reported only, the changed-lines gate decides this run" : "";
+  const overall = summary2.scope || opts.affectedBy ? "affected selection" : "whole solution";
+  let verdict = "";
+  if (decided) verdict = `; the ${overall} missed its minimum and failed this run`;
+  else if (summary2.diff) verdict = `; ${overall} reported only, the changed-lines gate decides this run`;
   lines.push(
     `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`${verdict}).`,
     ""
@@ -71222,14 +71292,20 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
 function coverageRegionLines(summary2, workspace, opts) {
   const lines = regionTableLines(summary2.regions, workspace, opts, "uncovered region(s)");
   lines.push("---");
-  lines.push(coverageFooterLine(summary2, opts.failOnThreshold));
+  lines.push(coverageFooterLine(summary2, opts.failOnThreshold, opts.exitCode));
   return lines;
 }
-function coverageFooterLine(summary2, failOnThreshold) {
+function coverageFooterLine(summary2, failOnThreshold, exitCode) {
   if (summary2.uninstrumented.length > 0) {
     return "_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._";
   }
   const diff = summary2.diff;
+  if (selectionGateFailed(summary2, exitCode)) {
+    if (!failOnThreshold) {
+      return "_The changed lines are covered, but overall coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._";
+    }
+    return "_The changed lines are covered, but overall coverage is below the required minimum. Cover the regions listed above before merging._";
+  }
   if (diff) {
     if (diff.met) {
       return diff.changed === 0 ? "_The changed-lines gate passed without a measurable changed line to check._" : "_Changed lines meet the required minimum._";
@@ -71259,6 +71335,9 @@ function coverageTitle(exitCode, summary2) {
   if (exitCode === 64) return "Coverage could not run (usage, config, or environment error)";
   if (summary2.percent === null) return "No coverage data";
   const diff = summary2.diff;
+  if (selectionGateFailed(summary2, exitCode)) {
+    return `Coverage ${summary2.percent.toFixed(2)}% is below the required minimum (changed lines met)`;
+  }
   if (diff) {
     if (diff.changed === 0) return "Diff coverage: no measurable changed lines (gate passed over 0 lines)";
     const shownDiff = `${diff.percent === null ? "unknown" : `${diff.percent.toFixed(2)}%`} (${diff.covered}/${diff.changed} changed lines)`;
@@ -71510,7 +71589,8 @@ async function runCoverage(ctx) {
     sha,
     titleSuffix,
     failOnThreshold: options.failOnThreshold,
-    exitCode: code
+    exitCode: code,
+    affectedBy: diffArgs.includes("--affected-by")
   });
   await writeSummary(markdown);
   const published = await publishViaPortal(
@@ -71537,6 +71617,15 @@ async function runCoverage(ctx) {
     await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
   }
   if (code === 0) return;
+  if (selectionGateFailed(summary2, code)) {
+    const detail = `The changed lines are covered, but overall coverage is ${summary2.percent === null ? "unknown" : `${summary2.percent.toFixed(2)}%`}, below the required ${summary2.required ?? 100}% (threshold from \`${summary2.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(`${detail} What to do: cover the regions listed above, or pass a lower \`min-coverage\`.`);
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
   if (code === 1 && summary2.diff) {
     const d = summary2.diff;
     const detail = `Changed-line coverage is ${d.percent === null ? "unknown" : `${d.percent.toFixed(2)}%`} (${d.covered} of ${d.changed} changed lines), below the required ${d.required ?? 100}% (threshold from \`${d.source}\`).`;
@@ -71570,6 +71659,12 @@ async function runCoverage(ctx) {
   if (code === 2) {
     core.setFailed(
       "The coverage run failed because tests failed or the coverage data was incomplete. What to do: fix the failing tests shown above; the gate only evaluates a complete run."
+    );
+    return;
+  }
+  if (code === 3 && summary2.scope && summary2.scope.crossCheckFailureFile) {
+    core.setFailed(
+      `The \`affected-by\` completeness check failed: the changed file ${displayPath(summary2.scope.crossCheckFailureFile, workspace)} has no coverage data in the selected test projects, so this selection cannot gate it. What to do: reference its project from a test project, add it to \`coverage.exclude\` if it is not meant to be tested, or run without \`affected-by\`.`
     );
     return;
   }
@@ -71643,16 +71738,19 @@ async function run() {
     }
     core.info(`Auto-discovered solution: ${solution}`);
   }
-  if (mode === "coverage" && !validateCoverageDiffInputs(
-    diffInput,
-    core.getInput("min-diff-coverage"),
-    workspace,
-    enabledRangeFlags({
+  if (mode === "coverage") {
+    const rangeFlagInputs = {
       affectedBy: core.getInput("affected-by"),
       failOnUnmeasuredProjects: core.getInput("fail-on-unmeasured-projects")
-    })
-  )) {
-    return;
+    };
+    if (!validateRangeFlagValues(rangeFlagInputs) || !validateCoverageDiffInputs(
+      diffInput,
+      core.getInput("min-diff-coverage"),
+      workspace,
+      enabledRangeFlags(rangeFlagInputs)
+    )) {
+      return;
+    }
   }
   const tmp = fs10.mkdtempSync(path14.join(os10.tmpdir(), "codecharter-"));
   try {
@@ -71907,6 +72005,7 @@ export {
   MAX_COMMENT_CHARS,
   MAX_COMMENT_ROWS,
   PLATFORMS,
+  affectedSelectionLines,
   analysisBadgePayload,
   buildBadgePayload,
   buildComment,
@@ -71918,6 +72017,7 @@ export {
   coverageBadgePayload,
   coverageConclusion,
   coverageFooterLine,
+  coverageScopeSummary,
   coverageSummary,
   coverageTitle,
   diffCoverageSummary,
@@ -71959,6 +72059,7 @@ export {
   resolvePlatform,
   run,
   runCoverage,
+  selectionGateFailed,
   severityBadge,
   severityLabel,
   severityRank,
@@ -71970,6 +72071,7 @@ export {
   uninstrumentedModules,
   upsertComment,
   validateCoverageDiffInputs,
+  validateRangeFlagValues,
   verifySha,
   withBadge,
   writeSummary
