@@ -71101,7 +71101,7 @@ function affectedSelectionLines(summary2, workspace, affectedBy) {
       `Ran ${summary2.projects.length} test project(s) selected by \`--affected-by\`. The CLI did not report which test projects it skipped, so the selection is shown only through the test table below.`,
       ""
     );
-    lines.push(...unmeasuredProjectLines(summary2));
+    lines.push(...unmeasuredProjectLines(summary2, workspace));
     return lines;
   }
   const total = scope.selected.length + scope.skipped.length;
@@ -71113,7 +71113,7 @@ function affectedSelectionLines(summary2, workspace, affectedBy) {
     const reasons = scope.escalationReasons.length > 0 ? scope.escalationReasons.map(escapeInline).join("; ") : "no reason reported";
     lines.push(`**Selection escalated to all test projects:** ${reasons}.`, "");
   }
-  lines.push(...unmeasuredProjectLines(summary2));
+  lines.push(...unmeasuredProjectLines(summary2, workspace));
   if (scope.skipped.length > 0) {
     const shown = scope.skipped.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
     const more = scope.skipped.length > MAX_COMMENT_ROWS ? `, and ${scope.skipped.length - MAX_COMMENT_ROWS} more` : "";
@@ -71135,10 +71135,10 @@ function affectedSelectionLines(summary2, workspace, affectedBy) {
   }
   return lines;
 }
-function unmeasuredProjectLines(summary2) {
+function unmeasuredProjectLines(summary2, workspace) {
   const names = summary2.gates && summary2.gates.selection ? summary2.gates.selection.unmeasuredProjects : [];
   if (names.length === 0) return [];
-  const shown = names.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
+  const shown = names.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(displayPath(name, workspace)));
   const more = names.length > MAX_COMMENT_ROWS ? `, and ${names.length - MAX_COMMENT_ROWS} more` : "";
   return [`**Warning:** no test project measured ${names.length} affected project(s): ${shown.join(", ")}${more}.`, ""];
 }
@@ -71228,7 +71228,7 @@ function withBadge(payload, wantBadge, badge) {
 }
 function coverageBadgePayload(summary2) {
   return buildBadgePayload({
-    coverage: summary2.percent === null ? null : {
+    coverage: summary2.percent === null || summary2.noDataReason ? null : {
       percent: floorPercent(summary2.percent),
       requiredPercent: summary2.required,
       met: summary2.met,

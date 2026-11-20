@@ -1556,7 +1556,7 @@ function affectedSelectionLines(summary, workspace, affectedBy) {
         'which test projects it skipped, so the selection is shown only through the test table below.',
       ''
     );
-    lines.push(...unmeasuredProjectLines(summary));
+    lines.push(...unmeasuredProjectLines(summary, workspace));
     return lines;
   }
   const total = scope.selected.length + scope.skipped.length;
@@ -1570,7 +1570,7 @@ function affectedSelectionLines(summary, workspace, affectedBy) {
       scope.escalationReasons.length > 0 ? scope.escalationReasons.map(escapeInline).join('; ') : 'no reason reported';
     lines.push(`**Selection escalated to all test projects:** ${reasons}.`, '');
   }
-  lines.push(...unmeasuredProjectLines(summary));
+  lines.push(...unmeasuredProjectLines(summary, workspace));
   if (scope.skipped.length > 0) {
     const shown = scope.skipped.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
     const more = scope.skipped.length > MAX_COMMENT_ROWS ? `, and ${scope.skipped.length - MAX_COMMENT_ROWS} more` : '';
@@ -1597,12 +1597,13 @@ function affectedSelectionLines(summary, workspace, affectedBy) {
 /**
  * The warning line for affected projects that no test project measured (the
  * selection gate's `unmeasuredProjects`), or nothing when every affected project
- * was measured. Names are capped like the skipped list.
+ * was measured. Names are capped like the skipped list. The CLI writes each as
+ * an absolute project directory, shown workspace-relative.
  */
-function unmeasuredProjectLines(summary) {
+function unmeasuredProjectLines(summary, workspace) {
   const names = summary.gates && summary.gates.selection ? summary.gates.selection.unmeasuredProjects : [];
   if (names.length === 0) return [];
-  const shown = names.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
+  const shown = names.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(displayPath(name, workspace)));
   const more = names.length > MAX_COMMENT_ROWS ? `, and ${names.length - MAX_COMMENT_ROWS} more` : '';
   return [`**Warning:** no test project measured ${names.length} affected project(s): ${shown.join(', ')}${more}.`, ''];
 }
@@ -1762,11 +1763,16 @@ function withBadge(payload, wantBadge, badge) {
   return wantBadge ? { ...payload, badge: badge() } : payload;
 }
 
-/** The badge payload for a coverage run; coverage stays null without data. */
+/**
+ * The badge payload for a coverage run; coverage stays null without data. A run
+ * the CLI marks with a `noDataReason` carries real line numbers (a failed
+ * completeness check still reports 100%) but no verdict, so it gets no coverage
+ * badge either.
+ */
 function coverageBadgePayload(summary) {
   return buildBadgePayload({
     coverage:
-      summary.percent === null
+      summary.percent === null || summary.noDataReason
         ? null
         : {
             percent: floorPercent(summary.percent),

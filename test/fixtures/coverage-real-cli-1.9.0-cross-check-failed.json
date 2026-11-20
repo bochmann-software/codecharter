@@ -1,0 +1,67 @@
+{
+  "summary": {
+    "totalLines": 4,
+    "coveredLines": 4,
+    "percent": 100,
+    "minimumRequiredPercent": 100,
+    "hasMetThreshold": false,
+    "hasMetTotalThreshold": false,
+    "noDataReason": "crossCheckFailed",
+    "minimumRequiredPercentSource": "default",
+    "unresolvedSourceFileCount": 0,
+    "coverageFilesOldestUtc": "2026-11-20T21:23:50.3127975Z",
+    "coverageFilesNewestUtc": "2026-11-20T21:23:50.3127975Z"
+  },
+  "testResults": [
+    {
+      "project": "LibA.Tests",
+      "exitCode": 0,
+      "succeeded": true,
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "failureReason": null,
+      "failedTests": [],
+      "failedTestCount": 0
+    }
+  ],
+  "uncoveredRegions": [],
+  "diffCoverage": {
+    "gitRef": "main..HEAD",
+    "measurableChangedLines": 4,
+    "coveredChangedLines": 4,
+    "percent": 100,
+    "requiredPercent": 100,
+    "thresholdProvenance": "inherited",
+    "met": false,
+    "uncoveredChangedRegions": [],
+    "unmeasuredProjectFiles": [],
+    "unmeasuredFilesOutsideRoot": []
+  },
+  "gates": {
+    "diff": {
+      "measuredLines": 4,
+      "coveredLines": 4,
+      "percent": 100,
+      "requiredPercent": 100,
+      "met": false
+    },
+    "selection": {
+      "measuredLines": 4,
+      "coveredLines": 4,
+      "percent": 100,
+      "requiredPercent": 100,
+      "met": false,
+      "unmeasuredProjects": []
+    }
+  },
+  "coverageScope": {
+    "selectedSuites": ["LibA.Tests"],
+    "skippedSuites": ["LibB.Tests"],
+    "crossCheckFailureFile": "/home/runner/work/sample/sample/src/LibA/Orph.cs",
+    "escalated": false,
+    "escalationReasons": []
+  },
+  "uninstrumentedModules": []
+}

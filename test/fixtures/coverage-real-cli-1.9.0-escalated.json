@@ -1,0 +1,81 @@
+{
+  "summary": {
+    "totalLines": 5,
+    "coveredLines": 5,
+    "percent": 100,
+    "minimumRequiredPercent": 100,
+    "hasMetThreshold": true,
+    "hasMetTotalThreshold": true,
+    "noDataReason": null,
+    "minimumRequiredPercentSource": "default",
+    "unresolvedSourceFileCount": 0,
+    "coverageFilesOldestUtc": "2026-11-20T21:18:55.492435Z",
+    "coverageFilesNewestUtc": "2026-11-20T21:18:55.492435Z"
+  },
+  "testResults": [
+    {
+      "project": "LibB.Tests",
+      "exitCode": 0,
+      "succeeded": true,
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "failureReason": null,
+      "failedTests": [],
+      "failedTestCount": 0
+    },
+    {
+      "project": "LibA.Tests",
+      "exitCode": 0,
+      "succeeded": true,
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "failureReason": null,
+      "failedTests": [],
+      "failedTestCount": 0
+    }
+  ],
+  "uncoveredRegions": [],
+  "diffCoverage": {
+    "gitRef": "main..HEAD",
+    "measurableChangedLines": 4,
+    "coveredChangedLines": 4,
+    "percent": 100,
+    "requiredPercent": 100,
+    "thresholdProvenance": "inherited",
+    "met": true,
+    "uncoveredChangedRegions": [],
+    "unmeasuredProjectFiles": [],
+    "unmeasuredFilesOutsideRoot": []
+  },
+  "gates": {
+    "diff": {
+      "measuredLines": 4,
+      "coveredLines": 4,
+      "percent": 100,
+      "requiredPercent": 100,
+      "met": true
+    },
+    "selection": {
+      "measuredLines": 5,
+      "coveredLines": 5,
+      "percent": 100,
+      "requiredPercent": 100,
+      "met": true,
+      "unmeasuredProjects": []
+    }
+  },
+  "coverageScope": {
+    "selectedSuites": ["LibB.Tests", "LibA.Tests"],
+    "skippedSuites": [],
+    "crossCheckFailureFile": null,
+    "escalated": true,
+    "escalationReasons": [
+      "\u0027Directory.Build.props\u0027 is a central file that can affect any project\u0027s build or test run."
+    ]
+  },
+  "uninstrumentedModules": []
+}
