@@ -1235,7 +1235,23 @@ test('coverage mode: both gates missed with fail-on-threshold: false reports wit
   );
   assert.equal(payload.conclusion, 'neutral');
   assert.deepEqual(failures, []);
-  assert.ok(infos.some((m) => /^Changed-line coverage is 60\.00%.*overall coverage is 70\.00%.*Not failing/.test(m)));
+  // Ordered substring checks (linear) instead of a regex with several `.*`.
+  const inOrder = (m, ...parts) => {
+    let at = 0;
+    for (const part of parts) {
+      const found = m.indexOf(part, at);
+      if (found < 0) return false;
+      at = found + part.length;
+    }
+    return true;
+  };
+  assert.ok(
+    infos.some(
+      (m) =>
+        m.startsWith('Changed-line coverage is 60.00%') &&
+        inOrder(m, 'Changed-line coverage is 60.00%', 'overall coverage is 70.00%', 'Not failing')
+    )
+  );
 });
 
 test('coverage mode: an unfiltered run sends the badge and says nothing about it', async () => {
