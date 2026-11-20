@@ -1350,6 +1350,8 @@ test('coverage mode: an incomplete run (exit 2) with a reason names it in title 
   );
   assert.equal(payload.title, 'No coverage data: the test run wrote no coverage files');
   assert.match(failures[0], /Reason: the test run wrote no coverage files\./);
+  assert.match(failures[0], /fix the cause named in the reason/);
+  assert.doesNotMatch(failures[0], /failing tests shown above/);
   for (const name of ['coverage-percent', 'coverage-met', 'diff-coverage-percent', 'diff-coverage-met']) {
     assert.equal(outputs[name], '', name);
   }
@@ -1370,6 +1372,7 @@ test('coverage mode: a plain exit 2 without a reason keeps the generic failure a
   const payload = await coverageRun(coverageReport(), { failOnThreshold: true }, 2);
   assert.equal(payload.title, 'Tests failed or coverage was incomplete');
   assert.doesNotMatch(failures[0], /Reason:/);
+  assert.match(failures[0], /fix the failing tests shown above/);
   assert.equal(outputs['coverage-met'], '');
 });
 

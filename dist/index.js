@@ -71805,8 +71805,9 @@ async function runCoverage(ctx) {
   }
   if (code === 2) {
     const reason = summary2.noDataReason ? ` Reason: ${noDataText(summary2.noDataReason)}.` : "";
+    const todo = summary2.noDataReason ? "What to do: fix the cause named in the reason; the gate only evaluates a complete run." : "What to do: fix the failing tests shown above; the gate only evaluates a complete run.";
     core.setFailed(
-      `The coverage run failed because tests failed or the coverage data was incomplete.${reason} What to do: fix the failing tests shown above; the gate only evaluates a complete run.`
+      `The coverage run failed because tests failed or the coverage data was incomplete.${reason} ${todo}`
     );
     return;
   }
