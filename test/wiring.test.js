@@ -1130,6 +1130,77 @@ test('coverage mode: run() rejects an invalid affected-by before the CLI downloa
   assert.deepEqual(failures, ['Invalid `affected-by` "yes". Use `true` or `false`.']);
 });
 
+test('coverage mode: both gates met passes, the badge is skipped and the summary says so', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-met.json'),
+    { diff: 'a..b', affectedBy: 'true', badge: true, failOnThreshold: true },
+    0
+  );
+  assert.equal(payload.conclusion, 'success');
+  assert.equal('badge' in payload, false, 'a narrowed run sends no badge');
+  assert.match(payload.summary, /\| Affected selection \| 10 \| 10 \| 100\.00% \| 100% \| yes \|/);
+  assert.match(payload.summary, /coverage badge is not updated on `affected-by` runs/);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: only the changed lines missed fails with the changed-lines message', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-diff-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Diff coverage 60.00% (3/5 changed lines) is below the required minimum');
+  assert.deepEqual(failures, [
+    'Changed-line coverage is 60.00% (3 of 5 changed lines), below the required 100% (threshold from `--min-diff-coverage`). ' +
+      'What to do: cover the changed lines listed above, or pass a lower `min-diff-coverage`.',
+  ]);
+});
+
+test('coverage mode: both gates missed fails once and names both', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-both-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.conclusion, 'failure');
+  assert.equal(payload.title, 'Coverage 70.00% and changed lines 60.00% are below the required minimum');
+  assert.match(payload.summary, /\| Changed lines \| 5 \| 3 \| 60\.00% \| 100% \| \*\*no\*\* \|/);
+  assert.match(payload.summary, /\| Affected selection \| 10 \| 7 \| 70\.00% \| 100% \| \*\*no\*\* \|/);
+  assert.deepEqual(failures, [
+    'Changed-line coverage is 60.00% (3 of 5 changed lines), below the required 100%, and overall coverage is 70.00%, ' +
+      'below the required 100% (threshold from `default`). What to do: cover the changed lines and the regions listed ' +
+      'above, or pass lower `min-diff-coverage` and `min-coverage`.',
+  ]);
+});
+
+test('coverage mode: both gates missed with fail-on-threshold: false reports without failing', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-both-below.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: false },
+    1
+  );
+  assert.equal(payload.conclusion, 'neutral');
+  assert.deepEqual(failures, []);
+  assert.ok(infos.some((m) => /^Changed-line coverage is 60\.00%.*overall coverage is 70\.00%.*Not failing/.test(m)));
+});
+
+test('coverage mode: an unfiltered run sends the badge and says nothing about it', async () => {
+  const payload = await coverageRun(realReport('coverage-diff-met-whole-below.json'), { diff: 'a..b', badge: true }, 0);
+  assert.ok(payload.badge.coverage, 'an unfiltered run keeps the badge');
+  assert.doesNotMatch(payload.summary, /coverage badge is not updated/);
+});
+
+test('coverage mode: a narrowed run without badge: true says nothing about the badge', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-gates-met.json'),
+    { diff: 'a..b', affectedBy: 'true', badge: false },
+    0
+  );
+  assert.equal('badge' in payload, false);
+  assert.doesNotMatch(payload.summary, /coverage badge is not updated/);
+});
+
 test('analyze mode: diff: true on a push whose before is gone diffs the commit against its parent', async () => {
   github.context.eventName = 'push';
   github.context.payload = { before: 'BEFORESHA', repository: { default_branch: 'main' } };

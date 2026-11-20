@@ -70959,6 +70959,7 @@ function coverageSummary(report) {
   const percent = typeof s.percent === "number" ? s.percent : null;
   const required = typeof s.minimumRequiredPercent === "number" ? s.minimumRequiredPercent : null;
   const diff = diffCoverageSummary(report && report.diffCoverage);
+  const gates = gatesSummary(report && report.gates);
   return {
     total: Number(s.totalLines) || 0,
     covered: Number(s.coveredLines) || 0,
@@ -70967,17 +70968,33 @@ function coverageSummary(report) {
     source: s.minimumRequiredPercentSource || "default",
     // Under a diff gate the CLI's `hasMetThreshold` carries the diff verdict, so
     // the whole-solution verdict (only reported then) is taken from its own
-    // numbers instead.
-    met: diff ? percent !== null && required !== null && meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required) : s.hasMetThreshold === true,
+    // numbers instead. A CLI that gates the affected selection reports that
+    // gate's verdict directly.
+    met: gates && gates.selection ? gates.selection.met : diff ? percent !== null && required !== null && meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required) : s.hasMetThreshold === true,
     regions: report && report.uncoveredRegions || [],
     projects: report && report.testResults || [],
     // Summed once here so the comment and the badge payload read the same
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
     diff,
+    gates,
     scope: coverageScopeSummary(report && report.coverageScope),
     uninstrumented: uninstrumentedModules(report)
   };
+}
+function gateSummary(g) {
+  if (!g || typeof g !== "object") return null;
+  return {
+    measured: Number(g.measuredLines) || 0,
+    covered: Number(g.coveredLines) || 0,
+    percent: typeof g.percent === "number" ? g.percent : null,
+    required: typeof g.requiredPercent === "number" ? g.requiredPercent : null,
+    met: g.met === true
+  };
+}
+function gatesSummary(gates) {
+  if (!gates || typeof gates !== "object") return null;
+  return { diff: gateSummary(gates.diff), selection: gateSummary(gates.selection) };
 }
 function uninstrumentedModules(report) {
   const modules = report && report.uninstrumentedModules;
@@ -71038,8 +71055,20 @@ function coverageScopeSummary(scope) {
     crossCheckFailureFile: typeof scope.crossCheckFailureFile === "string" ? scope.crossCheckFailureFile : null
   };
 }
+function failedGates(summary2, exitCode) {
+  if (summary2.gates) {
+    return {
+      diff: summary2.gates.diff !== null && !summary2.gates.diff.met,
+      selection: summary2.gates.selection !== null && !summary2.gates.selection.met
+    };
+  }
+  return {
+    diff: exitCode === 1 && Boolean(summary2.diff) && !summary2.diff.met,
+    selection: exitCode === 1 && Boolean(summary2.diff) && summary2.diff.met && !summary2.met
+  };
+}
 function selectionGateFailed(summary2, exitCode) {
-  return exitCode === 1 && Boolean(summary2.diff) && summary2.diff.met && !summary2.met;
+  return failedGates(summary2, exitCode).selection;
 }
 function affectedSelectionLines(summary2, workspace, affectedBy) {
   const scope = summary2.scope;
@@ -71171,7 +71200,7 @@ function analysisBadgePayload(counts) {
 }
 var TEST_TABLE_MODES = ["full", "failing", "totals"];
 function buildCoverageComment(summary2, workspace, opts) {
-  const { titleSuffix, exitCode, affectedBy } = opts;
+  const { titleSuffix, exitCode, affectedBy, badgeSkipped } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
   if (exitCode === 3 || summary2.percent === null) {
     return [
@@ -71180,12 +71209,15 @@ function buildCoverageComment(summary2, workspace, opts) {
       "![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)",
       "",
       ...affectedSelectionLines(summary2, workspace, affectedBy),
+      ...badgeSkippedLines(badgeSkipped),
       "---",
       "_No coverage data was produced, so the gate could not be evaluated._"
     ].join("\n");
   }
   const head = [
     ...coverageHeadLines(summary2, heading, opts),
+    ...gatesLines(summary2),
+    ...badgeSkippedLines(badgeSkipped),
     ...uninstrumentedLines(summary2, workspace),
     ...affectedSelectionLines(summary2, workspace, affectedBy),
     ...diffCoverageLines(summary2.diff, workspace, opts)
@@ -71198,13 +71230,41 @@ function buildCoverageComment(summary2, workspace, opts) {
   }
   return markdown;
 }
+function badgeSkippedLines(badgeSkipped) {
+  if (!badgeSkipped) return [];
+  return ["_The coverage badge is not updated on `affected-by` runs; only unfiltered runs update it._", ""];
+}
+function gatesLines(summary2) {
+  const gates = summary2.gates;
+  if (!gates) return [];
+  const rows = [];
+  const named = [
+    ["Changed lines", gates.diff],
+    ["Affected selection", gates.selection]
+  ];
+  for (const [label, gate] of named) {
+    if (!gate) continue;
+    rows.push(
+      `| ${label} | ${gate.measured} | ${gate.covered} | ${gate.percent === null ? "unknown" : `${gate.percent.toFixed(2)}%`} | ${gate.required === null ? EM_DASH : `${gate.required}%`} | ${gate.met ? "yes" : "**no**"} |`
+    );
+  }
+  if (rows.length === 0) return [];
+  return [
+    "### Gates",
+    "",
+    "| Gate | Measured lines | Covered | Percent | Required | Met |",
+    "|------|----------------|---------|---------|----------|-----|",
+    ...rows,
+    ""
+  ];
+}
 function shieldBadge(alt, label, message, color) {
   return `![${alt}](https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(message)}-${color}?style=flat-square)`;
 }
 function coverageHeadLines(summary2, heading, opts = {}) {
   const lines = [heading, ""];
   const shown = summary2.percent.toFixed(2);
-  const decided = selectionGateFailed(summary2, opts.exitCode);
+  const decided = failedGates(summary2, opts.exitCode).selection;
   const color = summary2.met ? "brightgreen" : summary2.diff && !decided ? "yellow" : "red";
   let badges = shieldBadge("coverage", "coverage", `${shown}%`, color);
   if (summary2.required !== null) {
@@ -71214,7 +71274,9 @@ function coverageHeadLines(summary2, heading, opts = {}) {
   const overall = summary2.scope || opts.affectedBy ? "affected selection" : "whole solution";
   let verdict = "";
   if (decided) verdict = `; the ${overall} missed its minimum and failed this run`;
-  else if (summary2.diff) verdict = `; ${overall} reported only, the changed-lines gate decides this run`;
+  else if (summary2.gates && summary2.gates.selection && summary2.gates.selection.met) {
+    verdict = `; the ${overall} met its minimum`;
+  } else if (summary2.diff) verdict = `; ${overall} reported only, the changed-lines gate decides this run`;
   lines.push(
     `${summary2.covered} of ${summary2.total} measurable lines covered (threshold from \`${summary2.source}\`${verdict}).`,
     ""
@@ -71300,7 +71362,14 @@ function coverageFooterLine(summary2, failOnThreshold, exitCode) {
     return "_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._";
   }
   const diff = summary2.diff;
-  if (selectionGateFailed(summary2, exitCode)) {
+  const failed = failedGates(summary2, exitCode);
+  if (failed.diff && failed.selection) {
+    if (!failOnThreshold) {
+      return "_The changed lines and overall coverage are below the required minimum; not failing the check (`fail-on-threshold: false`)._";
+    }
+    return "_The changed lines and overall coverage are below the required minimum. Cover the changed lines and the regions listed above before merging._";
+  }
+  if (failed.selection) {
     if (!failOnThreshold) {
       return "_The changed lines are covered, but overall coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._";
     }
@@ -71335,7 +71404,12 @@ function coverageTitle(exitCode, summary2) {
   if (exitCode === 64) return "Coverage could not run (usage, config, or environment error)";
   if (summary2.percent === null) return "No coverage data";
   const diff = summary2.diff;
-  if (selectionGateFailed(summary2, exitCode)) {
+  const failed = failedGates(summary2, exitCode);
+  if (failed.diff && failed.selection) {
+    const changed = summary2.gates.diff.percent === null ? "unknown" : `${summary2.gates.diff.percent.toFixed(2)}%`;
+    return `Coverage ${summary2.percent.toFixed(2)}% and changed lines ${changed} are below the required minimum`;
+  }
+  if (failed.selection) {
     return `Coverage ${summary2.percent.toFixed(2)}% is below the required minimum (changed lines met)`;
   }
   if (diff) {
@@ -71555,6 +71629,7 @@ async function runCoverage(ctx) {
   const { exe, env, workspace, tmp, portal, apiKey, options } = ctx;
   const diffArgs = await resolveCoverageDiffArgs(options, workspace);
   if (diffArgs === null) return;
+  const affectedBy = diffArgs.includes("--affected-by");
   const jsonPath = options.reportOutput ? path14.resolve(workspace, options.reportOutput) : path14.join(tmp, "coverage.json");
   const args = ["coverage", path14.resolve(workspace, options.root || "."), "--output-file", jsonPath];
   if (options.minCoverage) args.push("--min-coverage", options.minCoverage);
@@ -71584,13 +71659,15 @@ async function runCoverage(ctx) {
   const sha = github.context.payload.pull_request?.head?.sha || github.context.sha;
   const titleSuffix = options.commentKey || options.root || "";
   const discriminator = options.commentKey || [process.env.GITHUB_WORKFLOW, process.env.GITHUB_JOB, "coverage"].filter(Boolean).join(" / ");
+  const badgeSkipped = Boolean(options.badge) && affectedBy;
   const markdown = buildCoverageComment(summary2, workspace, {
     repoFull,
     sha,
     titleSuffix,
     failOnThreshold: options.failOnThreshold,
     exitCode: code,
-    affectedBy: diffArgs.includes("--affected-by")
+    affectedBy,
+    badgeSkipped
   });
   await writeSummary(markdown);
   const published = await publishViaPortal(
@@ -71609,7 +71686,7 @@ async function runCoverage(ctx) {
         comment: options.wantComment,
         commentKey: discriminator
       },
-      options.badge,
+      options.badge && !affectedBy,
       () => coverageBadgePayload(summary2)
     )
   );
@@ -71617,7 +71694,20 @@ async function runCoverage(ctx) {
     await upsertComment(options.githubToken, commentMarker(discriminator), markdown);
   }
   if (code === 0) return;
-  if (selectionGateFailed(summary2, code)) {
+  const failed = failedGates(summary2, code);
+  if (failed.diff && failed.selection) {
+    const d = summary2.gates.diff;
+    const detail = `Changed-line coverage is ${d.percent === null ? "unknown" : `${d.percent.toFixed(2)}%`} (${d.covered} of ${d.measured} changed lines), below the required ${d.required ?? 100}%, and overall coverage is ${summary2.percent === null ? "unknown" : `${summary2.percent.toFixed(2)}%`}, below the required ${summary2.required ?? 100}% (threshold from \`${summary2.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(
+        `${detail} What to do: cover the changed lines and the regions listed above, or pass lower \`min-diff-coverage\` and \`min-coverage\`.`
+      );
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
+  if (failed.selection) {
     const detail = `The changed lines are covered, but overall coverage is ${summary2.percent === null ? "unknown" : `${summary2.percent.toFixed(2)}%`}, below the required ${summary2.required ?? 100}% (threshold from \`${summary2.source}\`).`;
     if (options.failOnThreshold) {
       core.setFailed(`${detail} What to do: cover the regions listed above, or pass a lower \`min-coverage\`.`);
@@ -72028,6 +72118,7 @@ export {
   escapeInline,
   failOnBadge,
   failOnColor,
+  failedGates,
   fetchManifest,
   findExecutable,
   floorPercent,

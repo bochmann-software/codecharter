@@ -20,9 +20,20 @@ the latest release in its line.
   footer and failure message name that gate instead of the changed-lines one.
 - README: a pull request and push workflow that narrows pull requests with
   `affected-by` and keeps full runs on pushes.
+- Coverage mode with `affected-by: true` (CLI 1.9.0+): both gates of the run,
+  the changed lines and the overall coverage of the affected selection, are read
+  from the report's `gates` section. The summary gains a **Gates** table with
+  each gate's measured lines, covered lines, percent, required minimum and
+  verdict. When both gates fail, the title, footer and failure message name both.
 
 ### Changed
 
+- Coverage mode: a run narrowed by `affected-by` no longer sends or updates the
+  coverage badge; the badge comes only from unfiltered runs. The job summary and
+  the pull request comment say so in one line when `badge: true` is set.
+- Coverage mode: which gate failed is read from the report's `gates` section
+  when the CLI writes it, instead of inferring it from the exit code. The exit
+  code heuristic remains only for CLIs without that section.
 - Coverage mode: `affected-by` and `fail-on-unmeasured-projects` accept only
   `true` or `false` (any case, or empty). Any other value, such as `yes`, now
   fails the step before the CLI download instead of silently counting as

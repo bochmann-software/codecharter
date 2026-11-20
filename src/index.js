@@ -1317,6 +1317,7 @@ function coverageSummary(report) {
   const percent = typeof s.percent === 'number' ? s.percent : null;
   const required = typeof s.minimumRequiredPercent === 'number' ? s.minimumRequiredPercent : null;
   const diff = diffCoverageSummary(report && report.diffCoverage);
+  const gates = gatesSummary(report && report.gates);
   return {
     total: Number(s.totalLines) || 0,
     covered: Number(s.coveredLines) || 0,
@@ -1325,21 +1326,54 @@ function coverageSummary(report) {
     source: s.minimumRequiredPercentSource || 'default',
     // Under a diff gate the CLI's `hasMetThreshold` carries the diff verdict, so
     // the whole-solution verdict (only reported then) is taken from its own
-    // numbers instead.
-    met: diff
-      ? percent !== null &&
-        required !== null &&
-        meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required)
-      : s.hasMetThreshold === true,
+    // numbers instead. A CLI that gates the affected selection reports that
+    // gate's verdict directly.
+    met:
+      gates && gates.selection
+        ? gates.selection.met
+        : diff
+          ? percent !== null &&
+            required !== null &&
+            meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required)
+          : s.hasMetThreshold === true,
     regions: (report && report.uncoveredRegions) || [],
     projects: (report && report.testResults) || [],
     // Summed once here so the comment and the badge payload read the same
     // numbers without walking the projects twice.
     testCounts: testCountsFor(report && report.testResults),
     diff,
+    gates,
     scope: coverageScopeSummary(report && report.coverageScope),
     uninstrumented: uninstrumentedModules(report),
   };
+}
+
+/**
+ * One gate of the report's `gates` section (CLI >= 1.9.0): what it measured,
+ * how much it covered, its percent and required minimum, and its verdict. A
+ * gate without a `met` boolean counts as not met, so a malformed report fails
+ * closed rather than passing.
+ */
+function gateSummary(g) {
+  if (!g || typeof g !== 'object') return null;
+  return {
+    measured: Number(g.measuredLines) || 0,
+    covered: Number(g.coveredLines) || 0,
+    percent: typeof g.percent === 'number' ? g.percent : null,
+    required: typeof g.requiredPercent === 'number' ? g.requiredPercent : null,
+    met: g.met === true,
+  };
+}
+
+/**
+ * The report's `gates` section (CLI >= 1.9.0): the changed-lines gate (`diff`,
+ * null without `--git-ref`) and the affected-selection gate (`selection`, null
+ * without `--affected-by`). Null when the CLI does not write the section, in
+ * which case the verdicts are read from the exit code and the summary instead.
+ */
+function gatesSummary(gates) {
+  if (!gates || typeof gates !== 'object') return null;
+  return { diff: gateSummary(gates.diff), selection: gateSummary(gates.selection) };
 }
 
 /**
@@ -1445,14 +1479,29 @@ function coverageScopeSummary(scope) {
 }
 
 /**
- * True when the run failed its threshold (exit code 1) although the changed
- * lines met theirs, so the coverage over the measured selection is what failed.
- * Only a CLI that gates both (the double gate: the affected selection overall
- * and the changed lines) can end that way; with the changed-lines gate alone
- * exit code 1 always comes with a missed changed-lines minimum.
+ * Which gates of the run missed their minimum. The report's `gates` section
+ * (CLI >= 1.9.0) states it directly, so both gates can fail in one run. Without
+ * that section (an older CLI) the exit code and the summary are all there is:
+ * exit code 1 with a missed changed-lines minimum is the changed-lines gate, and
+ * exit code 1 with the changed lines met but the overall numbers short is the
+ * affected selection (only a CLI that gates both can end that way).
  */
+function failedGates(summary, exitCode) {
+  if (summary.gates) {
+    return {
+      diff: summary.gates.diff !== null && !summary.gates.diff.met,
+      selection: summary.gates.selection !== null && !summary.gates.selection.met,
+    };
+  }
+  return {
+    diff: exitCode === 1 && Boolean(summary.diff) && !summary.diff.met,
+    selection: exitCode === 1 && Boolean(summary.diff) && summary.diff.met && !summary.met,
+  };
+}
+
+/** True when the affected-selection gate missed its minimum in this run. */
 function selectionGateFailed(summary, exitCode) {
-  return exitCode === 1 && Boolean(summary.diff) && summary.diff.met && !summary.met;
+  return failedGates(summary, exitCode).selection;
 }
 
 /**
@@ -1680,7 +1729,7 @@ const TEST_TABLE_MODES = ['full', 'failing', 'totals'];
  * a body GitHub might reject beats no report at all.
  */
 function buildCoverageComment(summary, workspace, opts) {
-  const { titleSuffix, exitCode, affectedBy } = opts;
+  const { titleSuffix, exitCode, affectedBy, badgeSkipped } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage — \`${titleSuffix}\`` : '## CodeCharter Coverage';
 
   if (exitCode === 3 || summary.percent === null) {
@@ -1690,6 +1739,7 @@ function buildCoverageComment(summary, workspace, opts) {
       '![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)',
       '',
       ...affectedSelectionLines(summary, workspace, affectedBy),
+      ...badgeSkippedLines(badgeSkipped),
       '---',
       '_No coverage data was produced, so the gate could not be evaluated._',
     ].join('\n');
@@ -1699,6 +1749,8 @@ function buildCoverageComment(summary, workspace, opts) {
   // built once and only the table is re-rendered while looking for a fit.
   const head = [
     ...coverageHeadLines(summary, heading, opts),
+    ...gatesLines(summary),
+    ...badgeSkippedLines(badgeSkipped),
     ...uninstrumentedLines(summary, workspace),
     ...affectedSelectionLines(summary, workspace, affectedBy),
     ...diffCoverageLines(summary.diff, workspace, opts),
@@ -1711,6 +1763,47 @@ function buildCoverageComment(summary, workspace, opts) {
     if (markdown.length <= MAX_COMMENT_CHARS) break;
   }
   return markdown;
+}
+
+/**
+ * The note that an `affected-by` run leaves the coverage badge alone: only an
+ * unfiltered run updates it. Empty unless the run asked for a badge and was
+ * narrowed, so the note states a real skip.
+ */
+function badgeSkippedLines(badgeSkipped) {
+  if (!badgeSkipped) return [];
+  return ['_The coverage badge is not updated on `affected-by` runs; only unfiltered runs update it._', ''];
+}
+
+/**
+ * Both gates of a run that reported the `gates` section, one row each with
+ * what it measured, covered, its percent and required minimum, and whether it
+ * was met. A gate that did not run (null) gets no row. Empty without the section.
+ */
+function gatesLines(summary) {
+  const gates = summary.gates;
+  if (!gates) return [];
+  const rows = [];
+  const named = [
+    ['Changed lines', gates.diff],
+    ['Affected selection', gates.selection],
+  ];
+  for (const [label, gate] of named) {
+    if (!gate) continue;
+    rows.push(
+      `| ${label} | ${gate.measured} | ${gate.covered} | ${gate.percent === null ? 'unknown' : `${gate.percent.toFixed(2)}%`} | ` +
+        `${gate.required === null ? EM_DASH : `${gate.required}%`} | ${gate.met ? 'yes' : '**no**'} |`
+    );
+  }
+  if (rows.length === 0) return [];
+  return [
+    '### Gates',
+    '',
+    '| Gate | Measured lines | Covered | Percent | Required | Met |',
+    '|------|----------------|---------|---------|----------|-----|',
+    ...rows,
+    '',
+  ];
 }
 
 /** A flat-square shields.io badge; label and message are URL-encoded. */
@@ -1729,7 +1822,7 @@ function shieldBadge(alt, label, message, color) {
 function coverageHeadLines(summary, heading, opts = {}) {
   const lines = [heading, ''];
   const shown = summary.percent.toFixed(2);
-  const decided = selectionGateFailed(summary, opts.exitCode);
+  const decided = failedGates(summary, opts.exitCode).selection;
   const color = summary.met ? 'brightgreen' : summary.diff && !decided ? 'yellow' : 'red';
   let badges = shieldBadge('coverage', 'coverage', `${shown}%`, color);
   if (summary.required !== null) {
@@ -1739,7 +1832,9 @@ function coverageHeadLines(summary, heading, opts = {}) {
   const overall = summary.scope || opts.affectedBy ? 'affected selection' : 'whole solution';
   let verdict = '';
   if (decided) verdict = `; the ${overall} missed its minimum and failed this run`;
-  else if (summary.diff) verdict = `; ${overall} reported only, the changed-lines gate decides this run`;
+  else if (summary.gates && summary.gates.selection && summary.gates.selection.met) {
+    verdict = `; the ${overall} met its minimum`;
+  } else if (summary.diff) verdict = `; ${overall} reported only, the changed-lines gate decides this run`;
   lines.push(
     `${summary.covered} of ${summary.total} measurable lines covered (threshold from \`${summary.source}\`${verdict}).`,
     ''
@@ -1857,7 +1952,14 @@ function coverageFooterLine(summary, failOnThreshold, exitCode) {
     return '_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._';
   }
   const diff = summary.diff;
-  if (selectionGateFailed(summary, exitCode)) {
+  const failed = failedGates(summary, exitCode);
+  if (failed.diff && failed.selection) {
+    if (!failOnThreshold) {
+      return '_The changed lines and overall coverage are below the required minimum; not failing the check (`fail-on-threshold: false`)._';
+    }
+    return '_The changed lines and overall coverage are below the required minimum. Cover the changed lines and the regions listed above before merging._';
+  }
+  if (failed.selection) {
     if (!failOnThreshold) {
       return '_The changed lines are covered, but overall coverage is below the required minimum; not failing the check (`fail-on-threshold: false`)._';
     }
@@ -1902,7 +2004,12 @@ function coverageTitle(exitCode, summary) {
   if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
   if (summary.percent === null) return 'No coverage data';
   const diff = summary.diff;
-  if (selectionGateFailed(summary, exitCode)) {
+  const failed = failedGates(summary, exitCode);
+  if (failed.diff && failed.selection) {
+    const changed = summary.gates.diff.percent === null ? 'unknown' : `${summary.gates.diff.percent.toFixed(2)}%`;
+    return `Coverage ${summary.percent.toFixed(2)}% and changed lines ${changed} are below the required minimum`;
+  }
+  if (failed.selection) {
     return `Coverage ${summary.percent.toFixed(2)}% is below the required minimum (changed lines met)`;
   }
   if (diff) {
@@ -2235,6 +2342,7 @@ async function runCoverage(ctx) {
   const diffArgs = await resolveCoverageDiffArgs(options, workspace);
   if (diffArgs === null) return;
 
+  const affectedBy = diffArgs.includes('--affected-by');
   const jsonPath = options.reportOutput
     ? path.resolve(workspace, options.reportOutput)
     : path.join(tmp, 'coverage.json');
@@ -2276,13 +2384,17 @@ async function runCoverage(ctx) {
   const titleSuffix = options.commentKey || options.root || '';
   const discriminator =
     options.commentKey || [process.env.GITHUB_WORKFLOW, process.env.GITHUB_JOB, 'coverage'].filter(Boolean).join(' / ');
+  // A narrowed run covers only the affected test projects, so its numbers must
+  // not replace the repository badge: the badge comes from unfiltered runs only.
+  const badgeSkipped = Boolean(options.badge) && affectedBy;
   const markdown = buildCoverageComment(summary, workspace, {
     repoFull,
     sha,
     titleSuffix,
     failOnThreshold: options.failOnThreshold,
     exitCode: code,
-    affectedBy: diffArgs.includes('--affected-by'),
+    affectedBy,
+    badgeSkipped,
   });
   await writeSummary(markdown);
 
@@ -2302,7 +2414,7 @@ async function runCoverage(ctx) {
         comment: options.wantComment,
         commentKey: discriminator,
       },
-      options.badge,
+      options.badge && !affectedBy,
       () => coverageBadgePayload(summary)
     )
   );
@@ -2311,7 +2423,24 @@ async function runCoverage(ctx) {
   }
 
   if (code === 0) return;
-  if (selectionGateFailed(summary, code)) {
+  const failed = failedGates(summary, code);
+  if (failed.diff && failed.selection) {
+    const d = summary.gates.diff;
+    const detail =
+      `Changed-line coverage is ${d.percent === null ? 'unknown' : `${d.percent.toFixed(2)}%`} ` +
+      `(${d.covered} of ${d.measured} changed lines), below the required ${d.required ?? 100}%, and ` +
+      `overall coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, ` +
+      `below the required ${summary.required ?? 100}% (threshold from \`${summary.source}\`).`;
+    if (options.failOnThreshold) {
+      core.setFailed(
+        `${detail} What to do: cover the changed lines and the regions listed above, or pass lower \`min-diff-coverage\` and \`min-coverage\`.`
+      );
+    } else {
+      core.info(`${detail} Not failing the build (fail-on-threshold: false).`);
+    }
+    return;
+  }
+  if (failed.selection) {
     const detail =
       `The changed lines are covered, but overall coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, ` +
       `below the required ${summary.required ?? 100}% (threshold from \`${summary.source}\`).`;
@@ -2917,6 +3046,7 @@ export {
   enabledRangeFlags,
   validateRangeFlagValues,
   coverageScopeSummary,
+  failedGates,
   selectionGateFailed,
   affectedSelectionLines,
   validateCoverageDiffInputs,
