@@ -1821,7 +1821,7 @@ function buildCoverageComment(summary, workspace, opts) {
   const { titleSuffix, exitCode, affectedBy, badgeSkipped } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage — \`${titleSuffix}\`` : '## CodeCharter Coverage';
 
-  if (exitCode === 3 || summary.percent === null) {
+  if (exitCode === 3 || summary.percent === null || summary.noDataReason) {
     return [
       heading,
       '',

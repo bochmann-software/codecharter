@@ -56,6 +56,10 @@ test('real CLI report: a failed completeness check keeps its numbers but gets no
   const md = buildCoverageComment(summary, WORKSPACE, { ...OPTS, exitCode: 3 });
   assert.match(md, /src\/LibA\/Orph\.cs/);
   assert.match(md, /coverage-no%20data/);
+  // Rendered with an exit code that is not 3, the no-data card still wins over the 100%.
+  const md2 = buildCoverageComment(summary, WORKSPACE, { ...OPTS, exitCode: 2 });
+  assert.match(md2, /coverage-no%20data/);
+  assert.doesNotMatch(md2, /coverage-100/);
 });
 
 test('real CLI report: an incomplete run (exit 2) has a null percent and absolute unmeasured project paths shown relative', () => {

@@ -71253,7 +71253,7 @@ var TEST_TABLE_MODES = ["full", "failing", "totals"];
 function buildCoverageComment(summary2, workspace, opts) {
   const { titleSuffix, exitCode, affectedBy, badgeSkipped } = opts;
   const heading = titleSuffix ? `## CodeCharter Coverage \u2014 \`${titleSuffix}\`` : "## CodeCharter Coverage";
-  if (exitCode === 3 || summary2.percent === null) {
+  if (exitCode === 3 || summary2.percent === null || summary2.noDataReason) {
     return [
       heading,
       "",
