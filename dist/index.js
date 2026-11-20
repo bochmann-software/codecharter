@@ -71232,9 +71232,9 @@ function buildBadgePayload({ coverage = null, findings = null, testCounts = null
 function withBadge(payload, wantBadge, badge) {
   return wantBadge ? { ...payload, badge: badge() } : payload;
 }
-function coverageBadgePayload(summary2) {
+function coverageBadgePayload(summary2, noVerdict = false) {
   return buildBadgePayload({
-    coverage: summary2.percent === null || summary2.noDataReason ? null : {
+    coverage: noVerdict || summary2.percent === null || summary2.noDataReason ? null : {
       percent: floorPercent(summary2.percent),
       requiredPercent: summary2.required,
       met: summary2.met,
@@ -71744,7 +71744,7 @@ async function runCoverage(ctx) {
         commentKey: discriminator
       },
       options.badge && !affectedBy,
-      () => coverageBadgePayload(summary2)
+      () => coverageBadgePayload(summary2, noVerdict)
     )
   );
   if (!published && options.wantComment) {

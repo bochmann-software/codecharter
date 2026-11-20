@@ -1781,12 +1781,12 @@ function withBadge(payload, wantBadge, badge) {
  * The badge payload for a coverage run; coverage stays null without data. A run
  * the CLI marks with a `noDataReason` carries real line numbers (a failed
  * completeness check still reports 100%) but no verdict, so it gets no coverage
- * badge either.
+ * badge either; nor does any other run without a verdict (`noVerdict`: exit 2 or 3).
  */
-function coverageBadgePayload(summary) {
+function coverageBadgePayload(summary, noVerdict = false) {
   return buildBadgePayload({
     coverage:
-      summary.percent === null || summary.noDataReason
+      noVerdict || summary.percent === null || summary.noDataReason
         ? null
         : {
             percent: floorPercent(summary.percent),
@@ -2514,7 +2514,7 @@ async function runCoverage(ctx) {
         commentKey: discriminator,
       },
       options.badge && !affectedBy,
-      () => coverageBadgePayload(summary)
+      () => coverageBadgePayload(summary, noVerdict)
     )
   );
   if (!published && options.wantComment) {
