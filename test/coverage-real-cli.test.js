@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { coverageSummary, failedGates, buildCoverageComment, coverageBadgePayload } from '../src/index.js';
 
-// Reports written by a real CodeCharter CLI 1.9.0 (`coverage --git-ref R --affected-by R
-// --gate-total-coverage`) on a two-library sample solution, with the sample's paths
+// Reports written by a real CodeCharter CLI 1.9.0 (`coverage --git-ref R --affected-by R`,
+// the arguments the action passes; the action never passes `--gate-total-coverage`) on a
+// two-library sample solution, with the sample's paths
 // rewritten to the runner workspace. They pin the contract the hand-built
 // fixtures only assume.
 //   diff-below            exit 1  changed lines and selection both 25%

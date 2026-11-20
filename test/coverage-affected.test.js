@@ -176,9 +176,10 @@ test('selectionGateFailed: without gates, only exit 1 with met changed lines and
   const below = coverageSummary(withoutGates(fixture(SELECTION_BELOW)));
   assert.equal(below.met, false);
   assert.equal(below.diff.met, true);
-  assert.equal(selectionGateFailed(below, 1), true);
-  assert.equal(selectionGateFailed(below, 0), false, 'a changed-lines-only CLI passes this run');
-  assert.equal(selectionGateFailed(below, 2), false);
+  assert.equal(selectionGateFailed(below, 1, true), true);
+  assert.equal(selectionGateFailed(below, 1), false, 'a plain diff run has no selection gate');
+  assert.equal(selectionGateFailed(below, 0, true), false, 'a changed-lines-only CLI passes this run');
+  assert.equal(selectionGateFailed(below, 2, true), false);
 
   const diffMissed = coverageSummary(fixture('coverage-diff-below.json'));
   assert.equal(selectionGateFailed(diffMissed, 1), false, 'the changed lines decided');
@@ -294,7 +295,7 @@ test('coverageFooterLine: a failed overall gate respects fail-on-threshold', () 
 
 test('coverageTitle: names the overall gate when it failed the run despite met changed lines', () => {
   const summary = coverageSummary(fixture(SELECTION_BELOW));
-  assert.equal(coverageTitle(1, summary), 'Coverage 70.00% is below the required minimum (changed lines met)');
+  assert.equal(coverageTitle(1, summary, true), 'Coverage 70.00% is below the required minimum (changed lines met)');
   assert.equal(coverageTitle(0, coverageSummary(fixture(GATES_MET))), 'Diff coverage 100.00% (5/5 changed lines)');
 });
 
@@ -337,10 +338,16 @@ test('failedGates: without the gates section the exit code and summary decide (o
   assert.equal(gates.selection.met, false);
   const summary = coverageSummary(legacy);
   assert.equal(summary.gates, null);
-  assert.deepEqual(failedGates(summary, 1), { diff: false, selection: true });
-  assert.deepEqual(failedGates(summary, 0), { diff: false, selection: false });
+  assert.deepEqual(failedGates(summary, 1, true), { diff: false, selection: true });
+  assert.deepEqual(
+    failedGates(summary, 1),
+    { diff: true, selection: false },
+    'a plain diff run: exit 1 is the changed lines'
+  );
+  assert.deepEqual(failedGates(summary, 0, true), { diff: false, selection: false });
 
   const diffMissed = coverageSummary(fixture('coverage-diff-below.json'));
+  assert.deepEqual(failedGates(diffMissed, 1, true), { diff: true, selection: false });
   assert.deepEqual(failedGates(diffMissed, 1), { diff: true, selection: false });
 });
 
@@ -596,7 +603,7 @@ test('affectedSelectionLines: an escalated selection states that it widened, wit
     md,
     /\*\*Selection escalated to all test projects:\*\* Common\.Core changed, and every test project references it\./
   );
-  assert.match(md, /Ran 3 of 3 test project\(s\), the ones the change affects; 0 skipped\./);
+  assert.match(md, /Ran all 3 test project\(s\) \(escalated\)\./);
   assert.doesNotMatch(md, /Skipped test projects/);
 });
 
@@ -635,4 +642,65 @@ test('buildCoverageComment: an escalated run with unmeasured projects shows both
   const warning = md.indexOf('**Warning:**');
   assert.ok(escalated > 0 && warning > escalated);
   assert.ok(warning < md.indexOf('### Changed lines') || warning < md.indexOf('| Project |'));
+});
+
+// ---------------------------------------------------------------------------
+// escalation text, caps and injection
+// ---------------------------------------------------------------------------
+
+test('affectedSelectionLines: escalation reasons are capped with an "and N more" note', () => {
+  const reasons = Array.from({ length: MAX_COMMENT_ROWS + 3 }, (_, i) => `reason${i}`);
+  const summary = coverageSummary({
+    coverageScope: { selectedSuites: ['A.Tests'], skippedSuites: [], escalated: true, escalationReasons: reasons },
+  });
+  const md = affectedSelectionLines(summary, WORKSPACE, true).join('\n');
+  assert.match(md, new RegExp(`reason${MAX_COMMENT_ROWS - 1}; and 3 more\\.`));
+  assert.doesNotMatch(md, new RegExp(`reason${MAX_COMMENT_ROWS}\\b`));
+});
+
+test('affectedSelectionLines: an escalated run reads "Ran all N test projects (escalated)"', () => {
+  const summary = coverageSummary({
+    coverageScope: {
+      selectedSuites: ['A.Tests', 'B.Tests'],
+      skippedSuites: [],
+      escalated: true,
+      escalationReasons: ['x'],
+    },
+  });
+  assert.match(
+    affectedSelectionLines(summary, WORKSPACE, true).join('\n'),
+    /Ran all 2 test project\(s\) \(escalated\)\./
+  );
+});
+
+test('buildCoverageComment: escalation reasons, noDataReason and the cross-check file cannot inject Markdown', () => {
+  const evil = '`](https://evil.example) <b>x</b> @octocat\n## forged';
+  const summary = coverageSummary({
+    summary: { percent: null, noDataReason: evil },
+    coverageScope: {
+      selectedSuites: ['A.Tests'],
+      skippedSuites: [],
+      escalated: true,
+      escalationReasons: [evil],
+      crossCheckFailureFile: `/x/${evil}`,
+    },
+  });
+  const md = buildCoverageComment(summary, WORKSPACE, { ...OPTS, exitCode: 3, affectedBy: true });
+  assert.doesNotMatch(md, /\n## forged/);
+  const line = (needle) => md.split('\n').find((l) => l.includes(needle));
+  for (const l of [line('escalated to all'), line('Completeness check')]) {
+    assert.ok(l.includes('\\`\\](https://evil.example) \\<b\\>x\\</b\\>'), 'markup is backslash-escaped');
+    assert.ok(!l.includes('@octocat'), 'the mention is defused');
+  }
+  // The code span holds the reason with its backticks and line breaks replaced, so nothing closes it early.
+  const reasonLine = line('**Reason:**');
+  assert.ok(reasonLine.endsWith("(`'](https://evil.example) <b>x</b> @octocat'## forged`)."));
+  assert.equal((reasonLine.match(/(?<!\\)`/g) || []).length, 2);
+});
+
+test('affectedSelectionLines: a root project is shown as a dot and one outside the workspace stays absolute', () => {
+  const report = fixture(UNMEASURED);
+  report.gates.selection.unmeasuredProjects = [WORKSPACE, '/elsewhere/Lib', `${WORKSPACE}/src/Lib`];
+  const md = affectedSelectionLines(coverageSummary(report), WORKSPACE, true).join('\n');
+  assert.match(md, /3 affected project\(s\): \., \/elsewhere\/Lib, src\/Lib\./);
 });

@@ -1127,7 +1127,10 @@ function displayPath(filePath, workspace) {
   let p = filePath;
   if (path.isAbsolute(p)) {
     const rel = path.relative(workspace, p);
-    if (rel && !rel.startsWith('..')) p = rel;
+    // A path outside the workspace stays as the CLI wrote it; the workspace root is `.`.
+    if (rel === '') return '.';
+    if (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)) p = rel;
+    else return p.replace(/\\/g, '/');
   }
   return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
 }
@@ -1515,10 +1518,11 @@ function coverageScopeSummary(scope) {
  * that section (an older CLI) the exit code and the summary are all there is:
  * exit code 1 with a missed changed-lines minimum is the changed-lines gate, and
  * exit code 1 with the changed lines met but the overall numbers short is the
- * affected selection (only a CLI that gates both can end that way). Any other
+ * affected selection, but only when `affectedBy` is set (only a CLI that gates
+ * both can end that way); on a plain diff run exit code 1 is the changed lines. Any other
  * exit code (2 incomplete run, 3 no data) fails no gate.
  */
-function failedGates(summary, exitCode) {
+function failedGates(summary, exitCode, affectedBy = false) {
   // Only exit code 1 is a gate failure. Exit 2 (tests or data incomplete) and
   // exit 3 (no data) carry gate sections too, but neither decides by a gate.
   if (exitCode !== 1) return { diff: false, selection: false };
@@ -1528,15 +1532,17 @@ function failedGates(summary, exitCode) {
       selection: summary.gates.selection !== null && !summary.gates.selection.met,
     };
   }
+  // Only an affected-by run can end on the overall numbers; on a plain diff run
+  // exit code 1 is the changed-lines gate.
   return {
-    diff: Boolean(summary.diff) && !summary.diff.met,
-    selection: Boolean(summary.diff) && summary.diff.met && !summary.met,
+    diff: Boolean(summary.diff) && (!summary.diff.met || !affectedBy),
+    selection: affectedBy && Boolean(summary.diff) && summary.diff.met && !summary.met,
   };
 }
 
 /** True when the affected-selection gate missed its minimum in this run. */
-function selectionGateFailed(summary, exitCode) {
-  return failedGates(summary, exitCode).selection;
+function selectionGateFailed(summary, exitCode, affectedBy = false) {
+  return failedGates(summary, exitCode, affectedBy).selection;
 }
 
 /**
@@ -1561,13 +1567,19 @@ function affectedSelectionLines(summary, workspace, affectedBy) {
   }
   const total = scope.selected.length + scope.skipped.length;
   lines.push(
-    `Ran ${scope.selected.length} of ${total} test project(s), the ones the change affects; ` +
-      `${scope.skipped.length} skipped.`,
+    scope.escalated
+      ? `Ran all ${scope.selected.length} test project(s) (escalated).`
+      : `Ran ${scope.selected.length} of ${total} test project(s), the ones the change affects; ` +
+          `${scope.skipped.length} skipped.`,
     ''
   );
   if (scope.escalated) {
-    const reasons =
-      scope.escalationReasons.length > 0 ? scope.escalationReasons.map(escapeInline).join('; ') : 'no reason reported';
+    const shownReasons = scope.escalationReasons.slice(0, MAX_COMMENT_ROWS).map(escapeInline).join('; ');
+    const moreReasons =
+      scope.escalationReasons.length > MAX_COMMENT_ROWS
+        ? `; and ${scope.escalationReasons.length - MAX_COMMENT_ROWS} more`
+        : '';
+    const reasons = scope.escalationReasons.length > 0 ? `${shownReasons}${moreReasons}` : 'no reason reported';
     lines.push(`**Selection escalated to all test projects:** ${reasons}.`, '');
   }
   lines.push(...unmeasuredProjectLines(summary, workspace));
@@ -1617,7 +1629,9 @@ function noDataText(reason) {
 function noDataLines(summary) {
   if (!summary.noDataReason) return [];
   return [
-    `**Reason:** ${escapeInline(noDataText(summary.noDataReason))} (\`${escapeInline(summary.noDataReason)}\`).`,
+    // The code goes into a code span, where Markdown escapes do not apply: only a backtick
+    // or a line break could end it, so those are replaced.
+    `**Reason:** ${escapeInline(noDataText(summary.noDataReason))} (\`${summary.noDataReason.replace(/[`\r\n]+/g, "'")}\`).`,
     '',
   ];
 }
@@ -1898,7 +1912,7 @@ function shieldBadge(alt, label, message, color) {
 function coverageHeadLines(summary, heading, opts = {}) {
   const lines = [heading, ''];
   const shown = summary.percent.toFixed(2);
-  const decided = failedGates(summary, opts.exitCode).selection;
+  const decided = failedGates(summary, opts.exitCode, opts.affectedBy === true).selection;
   const color = summary.met ? 'brightgreen' : summary.diff && !decided ? 'yellow' : 'red';
   let badges = shieldBadge('coverage', 'coverage', `${shown}%`, color);
   if (summary.required !== null) {
@@ -2014,7 +2028,7 @@ function regionTableLines(regionList, workspace, { repoFull, sha }, label) {
 function coverageRegionLines(summary, workspace, opts) {
   const lines = regionTableLines(summary.regions, workspace, opts, 'uncovered region(s)');
   lines.push('---');
-  lines.push(coverageFooterLine(summary, opts.failOnThreshold, opts.exitCode));
+  lines.push(coverageFooterLine(summary, opts.failOnThreshold, opts.exitCode, opts.affectedBy === true));
   return lines;
 }
 
@@ -2023,12 +2037,12 @@ function coverageRegionLines(summary, workspace, opts) {
  * speaks for the gate that decides the exit code: the changed-lines gate when
  * one ran, otherwise the whole-solution gate.
  */
-function coverageFooterLine(summary, failOnThreshold, exitCode) {
+function coverageFooterLine(summary, failOnThreshold, exitCode, affectedBy = false) {
   if (summary.uninstrumented.length > 0) {
     return '_The gate failed closed because modules were not instrumented; `fail-on-threshold` does not soften this. Fix the instrumentation listed above before merging._';
   }
   const diff = summary.diff;
-  const failed = failedGates(summary, exitCode);
+  const failed = failedGates(summary, exitCode, affectedBy);
   if (failed.diff && failed.selection) {
     if (!failOnThreshold) {
       return '_The changed lines and overall coverage are below the required minimum; not failing the check (`fail-on-threshold: false`)._';
@@ -2076,16 +2090,17 @@ function noDataTitle(summary) {
 }
 
 /** One-line check-run title for a coverage run, naming the gate that decided it. */
-function coverageTitle(exitCode, summary) {
+function coverageTitle(exitCode, summary, affectedBy = false) {
   if (exitCode === 2 && summary.uninstrumented.length > 0) {
     return `Coverage incomplete: ${summary.uninstrumented.length} module(s) not instrumented`;
   }
+  if (exitCode === 2 && summary.noDataReason) return noDataTitle(summary);
   if (exitCode === 2) return 'Tests failed or coverage was incomplete';
   if (exitCode === 3) return noDataTitle(summary);
   if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
   if (summary.percent === null) return noDataTitle(summary);
   const diff = summary.diff;
-  const failed = failedGates(summary, exitCode);
+  const failed = failedGates(summary, exitCode, affectedBy);
   if (failed.diff && failed.selection) {
     const changed = summary.gates.diff.percent === null ? NO_PERCENT : `${summary.gates.diff.percent.toFixed(2)}%`;
     return `Coverage ${summary.percent.toFixed(2)}% and changed lines ${changed} are below the required minimum`;
@@ -2445,11 +2460,14 @@ async function runCoverage(ctx) {
 
   const report = readJson(jsonPath);
   const summary = coverageSummary(report);
-  core.setOutput('coverage-percent', summary.percent === null ? '' : summary.percent);
-  core.setOutput('coverage-met', String(summary.met));
+  // A run without a verdict (no data, or an exit code that is not a gate result)
+  // publishes empty outputs, which is distinct from a `false` verdict.
+  const noVerdict = Boolean(summary.noDataReason) || code === 2 || code === 3;
+  core.setOutput('coverage-percent', noVerdict || summary.percent === null ? '' : summary.percent);
+  core.setOutput('coverage-met', noVerdict ? '' : String(summary.met));
   core.setOutput('coverage-uncovered-regions', summary.regions.length);
   if (options.reportOutput) core.setOutput('coverage-report-path', jsonPath);
-  setDiffCoverageOutputs(summary.diff);
+  setDiffCoverageOutputs(summary.diff, noVerdict);
   if (diffArgs.length > 0 && report && !summary.diff && (code === 0 || code === 1)) {
     // Without the section the result cannot show how many changed lines were
     // checked, so the verdict must not pass silently as a diff gate.
@@ -2489,7 +2507,7 @@ async function runCoverage(ctx) {
         pullNumber: github.context.payload.pull_request?.number ?? null,
         checkName: titleSuffix ? `CodeCharter Coverage / ${titleSuffix}` : 'CodeCharter Coverage',
         conclusion: coverageConclusion(code, options.failOnThreshold),
-        title: coverageTitle(code, summary),
+        title: coverageTitle(code, summary, affectedBy),
         summary: markdown,
         annotations: [],
         comment: options.wantComment,
@@ -2504,7 +2522,7 @@ async function runCoverage(ctx) {
   }
 
   if (code === 0) return;
-  const failed = failedGates(summary, code);
+  const failed = failedGates(summary, code, affectedBy);
   if (failed.diff && failed.selection) {
     const d = summary.gates.diff;
     const detail =
@@ -2572,8 +2590,9 @@ async function runCoverage(ctx) {
     return;
   }
   if (code === 2) {
+    const reason = summary.noDataReason ? ` Reason: ${noDataText(summary.noDataReason)}.` : '';
     core.setFailed(
-      'The coverage run failed because tests failed or the coverage data was incomplete. ' +
+      `The coverage run failed because tests failed or the coverage data was incomplete.${reason} ` +
         'What to do: fix the failing tests shown above; the gate only evaluates a complete run.'
     );
     return;
@@ -2611,9 +2630,9 @@ async function runCoverage(ctx) {
  * no diff gate ran; after a gate over zero changed lines the percent stays
  * empty while the line counts say 0, so the reach of the gate is visible.
  */
-function setDiffCoverageOutputs(diff) {
-  core.setOutput('diff-coverage-percent', diff && diff.percent !== null ? diff.percent : '');
-  core.setOutput('diff-coverage-met', diff ? String(diff.met) : '');
+function setDiffCoverageOutputs(diff, noVerdict = false) {
+  core.setOutput('diff-coverage-percent', !noVerdict && diff && diff.percent !== null ? diff.percent : '');
+  core.setOutput('diff-coverage-met', !noVerdict && diff ? String(diff.met) : '');
   core.setOutput('diff-coverage-changed-lines', diff ? diff.changed : '');
   core.setOutput('diff-coverage-covered-lines', diff ? diff.covered : '');
   core.setOutput('diff-coverage-uncovered-regions', diff ? diff.regions.length : '');

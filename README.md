@@ -493,11 +493,11 @@ sending the numbers in the first place.
 | `findings-info` | Number of info-level findings |
 | `sarif-path` | Path to the generated SARIF file, if `sarif-output` was set. Unset when the run is inconclusive (the file is removed) |
 | `inconclusive` | `"true"` when the run was inconclusive (the rule sources could not be established), `"false"` otherwise; also `"true"` for a run without a report whose log names it inconclusive (no rule source at all), and empty for any other run without a report |
-| `coverage-percent` | Coverage mode: line-coverage percent; empty when no coverage data was produced |
-| `coverage-met` | Coverage mode: `"true"` when whole-solution coverage met the required minimum (only reported under a changed-lines gate) |
+| `coverage-percent` | Coverage mode: line-coverage percent; empty when the run has no verdict (no coverage data, or exit code 2 or 3) |
+| `coverage-met` | Coverage mode: `"true"` when whole-solution coverage met the required minimum (only reported under a changed-lines gate), `"false"` when it missed; empty when the run has no verdict (no coverage data, or exit code 2 or 3), which is distinct from `"false"` |
 | `coverage-uncovered-regions` | Coverage mode: number of uncovered regions in the report |
-| `diff-coverage-percent` | Coverage mode with `diff`: coverage percent of the changed lines; empty when no changed-lines gate ran or the range changed no measurable line |
-| `diff-coverage-met` | Coverage mode with `diff`: `"true"` when the changed lines met the required minimum; empty when no changed-lines gate ran |
+| `diff-coverage-percent` | Coverage mode with `diff`: coverage percent of the changed lines; empty when no changed-lines gate ran, the range changed no measurable line, or the run has no verdict |
+| `diff-coverage-met` | Coverage mode with `diff`: `"true"` when the changed lines met the required minimum; empty when no changed-lines gate ran or the run has no verdict (no coverage data, or exit code 2 or 3) |
 | `diff-coverage-changed-lines` | Coverage mode with `diff`: number of measurable changed lines the gate checked (`0` is a pass over nothing); empty when no gate ran |
 | `diff-coverage-covered-lines` | Coverage mode with `diff`: number of those changed lines that are covered; empty when no gate ran |
 | `diff-coverage-uncovered-regions` | Coverage mode with `diff`: number of uncovered changed regions; empty when no gate ran |

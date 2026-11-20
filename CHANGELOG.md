@@ -37,6 +37,16 @@ the latest release in its line.
 
 ### Changed
 
+- Coverage mode: a run without a verdict (the CLI wrote a `noDataReason`, or
+  exited with code 2 or 3) now sets `coverage-percent`, `coverage-met`,
+  `diff-coverage-percent` and `diff-coverage-met` to empty, instead of a
+  number or `"false"`. Empty means no verdict and is distinct from `"false"`.
+- Coverage mode: an incomplete run (exit code 2) with a `noDataReason` names the
+  reason in the check title and the failure message; paths outside the
+  workspace are shown as the CLI wrote them, and the workspace root as `.`;
+  escalation reasons are capped like the other lists; a plain `diff` run
+  without a `gates` section reads exit code 1 as the changed-lines gate.
+
 - Coverage mode: the verdicts come from the report's `gates` section and
   `summary.hasMetTotalThreshold`, never from the summary percent. A percent the
   report carries as null, such as a changed-lines gate over zero measured lines,

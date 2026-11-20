@@ -1337,3 +1337,52 @@ for (const [label, inputs, message] of [
     assert.deepEqual(posts, []);
   });
 }
+
+// ---------------------------------------------------------------------------
+// no-verdict runs, and a diff-only report without --affected-by
+// ---------------------------------------------------------------------------
+
+test('coverage mode: an incomplete run (exit 2) with a reason names it in title and failure, and has no verdict outputs', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-real-cli-1.9.0-incomplete.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    2
+  );
+  assert.equal(payload.title, 'No coverage data: the test run wrote no coverage files');
+  assert.match(failures[0], /Reason: the test run wrote no coverage files\./);
+  for (const name of ['coverage-percent', 'coverage-met', 'diff-coverage-percent', 'diff-coverage-met']) {
+    assert.equal(outputs[name], '', name);
+  }
+});
+
+test('coverage mode: a failed completeness check (exit 3) keeps its numbers out of the verdict outputs', async () => {
+  await coverageRun(
+    realReport('coverage-real-cli-1.9.0-cross-check-failed.json'),
+    { diff: 'a..b', affectedBy: 'true' },
+    3
+  );
+  for (const name of ['coverage-percent', 'coverage-met', 'diff-coverage-percent', 'diff-coverage-met']) {
+    assert.equal(outputs[name], '', name);
+  }
+});
+
+test('coverage mode: a plain exit 2 without a reason keeps the generic failure and title', async () => {
+  const payload = await coverageRun(coverageReport(), { failOnThreshold: true }, 2);
+  assert.equal(payload.title, 'Tests failed or coverage was incomplete');
+  assert.doesNotMatch(failures[0], /Reason:/);
+  assert.equal(outputs['coverage-met'], '');
+});
+
+// coverage-derived-diff-only.json is derived by hand from the real 1.9.0 diff-below report:
+// no gates.selection and no coverageScope, as a diff run without --affected-by writes it.
+test('coverage mode: a diff-only report without affected-by fails as the changed-lines gate', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-derived-diff-only.json'),
+    { diff: 'a..b', failOnThreshold: true },
+    1
+  );
+  assert.equal(payload.title, 'Diff coverage 25.00% (1/4 changed lines) is below the required minimum');
+  assert.match(failures[0], /^Changed-line coverage is 25\.00% \(1 of 4 changed lines\)/);
+  assert.doesNotMatch(payload.summary, /affected selection/);
+  assert.equal(outputs['diff-coverage-met'], 'false');
+});
