@@ -237,6 +237,16 @@ message names both. `fail-on-threshold: false` softens each gate the same way.
 Without the `gates` section (an older CLI) the action reads the verdict from the
 exit code instead.
 
+The selection block also reports two things that change what a green run means.
+When the CLI widens the selection to every test project (`coverageScope.escalated`),
+it says so and gives the CLI's reasons. When an affected project no test project
+measured (`gates.selection.unmeasuredProjects`), it warns and names that project.
+A run without data (exit code 3) writes a minimal report; the summary and the
+failure message then state its `noDataReason`: no coverage files, a test project
+that failed, a failed completeness check, or no measurable lines. A gate over
+zero changed lines passes, and its percent shows as `–`, never as 0 % or 100 %.
+Only exit code 1 means a gate failed; exit codes 2 and 3 do not.
+
 ### Solution auto-discovery
 
 When `solution` is left empty, the action scans the checked-out repository and

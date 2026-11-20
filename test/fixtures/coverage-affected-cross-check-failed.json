@@ -1,7 +1,39 @@
 {
+  "summary": {
+    "totalLines": 0,
+    "coveredLines": 0,
+    "percent": null,
+    "minimumRequiredPercent": 100,
+    "minimumRequiredPercentSource": "default",
+    "hasMetTotalThreshold": false,
+    "noDataReason": "crossCheckFailed",
+    "unresolvedSourceFileCount": 0
+  },
+  "testResults": [],
+  "uncoveredRegions": [],
+  "uninstrumentedModules": [],
   "coverageScope": {
     "selectedSuites": ["Lib.Tests"],
     "skippedSuites": ["App.Tests"],
-    "crossCheckFailureFile": "/home/runner/work/sample/sample/src/App/Widget.cs"
+    "crossCheckFailureFile": "/home/runner/work/sample/sample/src/App/Widget.cs",
+    "escalated": false,
+    "escalationReasons": []
+  },
+  "gates": {
+    "diff": {
+      "measuredLines": 0,
+      "coveredLines": 0,
+      "percent": null,
+      "requiredPercent": 100,
+      "met": false
+    },
+    "selection": {
+      "measuredLines": 0,
+      "coveredLines": 0,
+      "percent": null,
+      "requiredPercent": 100,
+      "met": false,
+      "unmeasuredProjects": []
+    }
   }
 }

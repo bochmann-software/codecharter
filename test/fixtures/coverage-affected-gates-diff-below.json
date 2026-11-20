@@ -4,11 +4,12 @@
     "coveredLines": 10,
     "percent": 100.0,
     "minimumRequiredPercent": 100,
-    "hasMetThreshold": true,
+    "hasMetTotalThreshold": true,
     "minimumRequiredPercentSource": "default",
     "unresolvedSourceFileCount": 0,
     "coverageFilesOldestUtc": "2026-09-25T08:18:24.5621629Z",
-    "coverageFilesNewestUtc": "2026-09-25T08:18:24.5621629Z"
+    "coverageFilesNewestUtc": "2026-09-25T08:18:24.5621629Z",
+    "noDataReason": null
   },
   "testResults": [
     {
@@ -65,7 +66,9 @@
   "coverageScope": {
     "selectedSuites": ["Lib.Tests"],
     "skippedSuites": ["App.Tests", "Web.Tests"],
-    "crossCheckFailureFile": null
+    "crossCheckFailureFile": null,
+    "escalated": false,
+    "escalationReasons": []
   },
   "gates": {
     "diff": {
@@ -80,7 +83,8 @@
       "coveredLines": 10,
       "percent": 100.0,
       "requiredPercent": 100,
-      "met": true
+      "met": true,
+      "unmeasuredProjects": []
     }
   }
 }

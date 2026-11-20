@@ -23,6 +23,17 @@ const CLI_EXIT_CONFIG_INVALID = 10;
 /** Placeholder for a table cell whose number the report does not carry. */
 const EM_DASH = '—';
 
+/** Placeholder for a percent the report carries as null (nothing was measured). Never 0 or 100. */
+const NO_PERCENT = '–';
+
+/** The human wording of each `summary.noDataReason` the CLI can write. */
+const NO_DATA_REASONS = {
+  noCoverageFiles: 'the test run wrote no coverage files',
+  testProjectFailed: 'a test project failed, so no complete coverage run exists',
+  crossCheckFailed: 'a changed file has no coverage data in the selected test projects',
+  noMeasurableLines: 'the run found no measurable lines',
+};
+
 /**
  * Escapes a value for a Markdown table cell. Line breaks collapse to spaces
  * first — a newline ends the row, and everything after it would be rendered as
@@ -1324,18 +1335,10 @@ function coverageSummary(report) {
     percent,
     required,
     source: s.minimumRequiredPercentSource || 'default',
-    // Under a diff gate the CLI's `hasMetThreshold` carries the diff verdict, so
-    // the whole-solution verdict (only reported then) is taken from its own
-    // numbers instead. A CLI that gates the affected selection reports that
-    // gate's verdict directly.
-    met:
-      gates && gates.selection
-        ? gates.selection.met
-        : diff
-          ? percent !== null &&
-            required !== null &&
-            meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required)
-          : s.hasMetThreshold === true,
+    met: overallVerdict(s, gates, diff, percent, required),
+    // Why the run had no data (exit code 3), or null. The CLI writes one of the
+    // NO_DATA_REASONS keys; any other string is kept and shown as it is.
+    noDataReason: typeof s.noDataReason === 'string' ? s.noDataReason : null,
     regions: (report && report.uncoveredRegions) || [],
     projects: (report && report.testResults) || [],
     // Summed once here so the comment and the badge payload read the same
@@ -1346,6 +1349,26 @@ function coverageSummary(report) {
     scope: coverageScopeSummary(report && report.coverageScope),
     uninstrumented: uninstrumentedModules(report),
   };
+}
+
+/**
+ * The whole-solution verdict, or the affected-selection verdict under
+ * `--affected-by`. The CLI states it in `gates.selection` or in
+ * `summary.hasMetTotalThreshold`. Only a CLI older than both reads it from
+ * `hasMetThreshold`, which under a diff gate carries the changed-lines verdict,
+ * so that case is worked out from the summary's own numbers.
+ */
+function overallVerdict(s, gates, diff, percent, required) {
+  if (gates && gates.selection) return gates.selection.met;
+  if (typeof s.hasMetTotalThreshold === 'boolean') return s.hasMetTotalThreshold;
+  if (diff) {
+    return (
+      percent !== null &&
+      required !== null &&
+      meetsThreshold(Number(s.coveredLines) || 0, Number(s.totalLines) || 0, required)
+    );
+  }
+  return s.hasMetThreshold === true;
 }
 
 /**
@@ -1373,7 +1396,11 @@ function gateSummary(g) {
  */
 function gatesSummary(gates) {
   if (!gates || typeof gates !== 'object') return null;
-  return { diff: gateSummary(gates.diff), selection: gateSummary(gates.selection) };
+  const selection = gateSummary(gates.selection);
+  return {
+    diff: gateSummary(gates.diff),
+    selection: selection && { ...selection, unmeasuredProjects: stringList(gates.selection.unmeasuredProjects) },
+  };
 }
 
 /**
@@ -1463,8 +1490,9 @@ function stringList(value) {
 /**
  * Flattens the report's `coverageScope` section, the `--affected-by` test
  * selection in the shape of the MCP `run_coverage` result: the test projects
- * the run selected and executed, the ones it skipped, and the changed file the
- * completeness cross-check found without coverage data (null when it passed).
+ * the run selected and executed, the ones it skipped, the changed file the
+ * completeness cross-check found without coverage data (null when it passed),
+ * and whether the selection escalated to all test projects, with the reasons.
  * Returns null when the report carries no such section: an unscoped run, or a
  * CLI that does not write it yet, which the rendering then states instead of
  * guessing a selection.
@@ -1475,6 +1503,9 @@ function coverageScopeSummary(scope) {
     selected: stringList(scope.selectedSuites),
     skipped: stringList(scope.skippedSuites),
     crossCheckFailureFile: typeof scope.crossCheckFailureFile === 'string' ? scope.crossCheckFailureFile : null,
+    // Set when the CLI widened the selection to every test project; the reasons say why.
+    escalated: scope.escalated === true,
+    escalationReasons: stringList(scope.escalationReasons),
   };
 }
 
@@ -1484,9 +1515,13 @@ function coverageScopeSummary(scope) {
  * that section (an older CLI) the exit code and the summary are all there is:
  * exit code 1 with a missed changed-lines minimum is the changed-lines gate, and
  * exit code 1 with the changed lines met but the overall numbers short is the
- * affected selection (only a CLI that gates both can end that way).
+ * affected selection (only a CLI that gates both can end that way). Any other
+ * exit code (2 incomplete run, 3 no data) fails no gate.
  */
 function failedGates(summary, exitCode) {
+  // Only exit code 1 is a gate failure. Exit 2 (tests or data incomplete) and
+  // exit 3 (no data) carry gate sections too, but neither decides by a gate.
+  if (exitCode !== 1) return { diff: false, selection: false };
   if (summary.gates) {
     return {
       diff: summary.gates.diff !== null && !summary.gates.diff.met,
@@ -1494,8 +1529,8 @@ function failedGates(summary, exitCode) {
     };
   }
   return {
-    diff: exitCode === 1 && Boolean(summary.diff) && !summary.diff.met,
-    selection: exitCode === 1 && Boolean(summary.diff) && summary.diff.met && !summary.met,
+    diff: Boolean(summary.diff) && !summary.diff.met,
+    selection: Boolean(summary.diff) && summary.diff.met && !summary.met,
   };
 }
 
@@ -1521,6 +1556,7 @@ function affectedSelectionLines(summary, workspace, affectedBy) {
         'which test projects it skipped, so the selection is shown only through the test table below.',
       ''
     );
+    lines.push(...unmeasuredProjectLines(summary));
     return lines;
   }
   const total = scope.selected.length + scope.skipped.length;
@@ -1529,6 +1565,12 @@ function affectedSelectionLines(summary, workspace, affectedBy) {
       `${scope.skipped.length} skipped.`,
     ''
   );
+  if (scope.escalated) {
+    const reasons =
+      scope.escalationReasons.length > 0 ? scope.escalationReasons.map(escapeInline).join('; ') : 'no reason reported';
+    lines.push(`**Selection escalated to all test projects:** ${reasons}.`, '');
+  }
+  lines.push(...unmeasuredProjectLines(summary));
   if (scope.skipped.length > 0) {
     const shown = scope.skipped.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
     const more = scope.skipped.length > MAX_COMMENT_ROWS ? `, and ${scope.skipped.length - MAX_COMMENT_ROWS} more` : '';
@@ -1550,6 +1592,33 @@ function affectedSelectionLines(summary, workspace, affectedBy) {
     );
   }
   return lines;
+}
+
+/**
+ * The warning line for affected projects that no test project measured (the
+ * selection gate's `unmeasuredProjects`), or nothing when every affected project
+ * was measured. Names are capped like the skipped list.
+ */
+function unmeasuredProjectLines(summary) {
+  const names = summary.gates && summary.gates.selection ? summary.gates.selection.unmeasuredProjects : [];
+  if (names.length === 0) return [];
+  const shown = names.slice(0, MAX_COMMENT_ROWS).map((name) => escapeInline(name));
+  const more = names.length > MAX_COMMENT_ROWS ? `, and ${names.length - MAX_COMMENT_ROWS} more` : '';
+  return [`**Warning:** no test project measured ${names.length} affected project(s): ${shown.join(', ')}${more}.`, ''];
+}
+
+/** The human wording of a no-data reason, or the reason itself when the CLI wrote one this action does not know. */
+function noDataText(reason) {
+  return NO_DATA_REASONS[reason] || reason;
+}
+
+/** The line stating why a run produced no data, or nothing when the CLI gave no reason. */
+function noDataLines(summary) {
+  if (!summary.noDataReason) return [];
+  return [
+    `**Reason:** ${escapeInline(noDataText(summary.noDataReason))} (\`${escapeInline(summary.noDataReason)}\`).`,
+    '',
+  ];
 }
 
 /** The count fields a project may carry, in the order the table shows them. */
@@ -1739,6 +1808,7 @@ function buildCoverageComment(summary, workspace, opts) {
       '![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)',
       '',
       ...affectedSelectionLines(summary, workspace, affectedBy),
+      ...noDataLines(summary),
       ...badgeSkippedLines(badgeSkipped),
       '---',
       '_No coverage data was produced, so the gate could not be evaluated._',
@@ -1791,7 +1861,7 @@ function gatesLines(summary) {
   for (const [label, gate] of named) {
     if (!gate) continue;
     rows.push(
-      `| ${label} | ${gate.measured} | ${gate.covered} | ${gate.percent === null ? 'unknown' : `${gate.percent.toFixed(2)}%`} | ` +
+      `| ${label} | ${gate.measured} | ${gate.covered} | ${gate.percent === null ? NO_PERCENT : `${gate.percent.toFixed(2)}%`} | ` +
         `${gate.required === null ? EM_DASH : `${gate.required}%`} | ${gate.met ? 'yes' : '**no**'} |`
     );
   }
@@ -1864,7 +1934,7 @@ function diffCoverageLines(diff, workspace, opts) {
     return lines;
   }
 
-  const shown = diff.percent === null ? 'unknown' : `${diff.percent.toFixed(2)}%`;
+  const shown = diff.percent === null ? NO_PERCENT : `${diff.percent.toFixed(2)}%`;
   lines.push(
     `${shieldBadge('diff coverage', 'diff coverage', shown, diff.met ? 'brightgreen' : 'red')}${required}`,
     ''
@@ -1994,19 +2064,24 @@ function coverageConclusion(exitCode, failOnThreshold) {
   return 'failure';
 }
 
+/** The no-data title, naming the reason when the CLI gave one. */
+function noDataTitle(summary) {
+  return summary.noDataReason ? `No coverage data: ${noDataText(summary.noDataReason)}` : 'No coverage data';
+}
+
 /** One-line check-run title for a coverage run, naming the gate that decided it. */
 function coverageTitle(exitCode, summary) {
   if (exitCode === 2 && summary.uninstrumented.length > 0) {
     return `Coverage incomplete: ${summary.uninstrumented.length} module(s) not instrumented`;
   }
   if (exitCode === 2) return 'Tests failed or coverage was incomplete';
-  if (exitCode === 3) return 'No coverage data';
+  if (exitCode === 3) return noDataTitle(summary);
   if (exitCode === 64) return 'Coverage could not run (usage, config, or environment error)';
-  if (summary.percent === null) return 'No coverage data';
+  if (summary.percent === null) return noDataTitle(summary);
   const diff = summary.diff;
   const failed = failedGates(summary, exitCode);
   if (failed.diff && failed.selection) {
-    const changed = summary.gates.diff.percent === null ? 'unknown' : `${summary.gates.diff.percent.toFixed(2)}%`;
+    const changed = summary.gates.diff.percent === null ? NO_PERCENT : `${summary.gates.diff.percent.toFixed(2)}%`;
     return `Coverage ${summary.percent.toFixed(2)}% and changed lines ${changed} are below the required minimum`;
   }
   if (failed.selection) {
@@ -2014,7 +2089,7 @@ function coverageTitle(exitCode, summary) {
   }
   if (diff) {
     if (diff.changed === 0) return 'Diff coverage: no measurable changed lines (gate passed over 0 lines)';
-    const shownDiff = `${diff.percent === null ? 'unknown' : `${diff.percent.toFixed(2)}%`} (${diff.covered}/${diff.changed} changed lines)`;
+    const shownDiff = `${diff.percent === null ? NO_PERCENT : `${diff.percent.toFixed(2)}%`} (${diff.covered}/${diff.changed} changed lines)`;
     return diff.met ? `Diff coverage ${shownDiff}` : `Diff coverage ${shownDiff} is below the required minimum`;
   }
   const shown = `${summary.percent.toFixed(2)}%`;
@@ -2427,9 +2502,9 @@ async function runCoverage(ctx) {
   if (failed.diff && failed.selection) {
     const d = summary.gates.diff;
     const detail =
-      `Changed-line coverage is ${d.percent === null ? 'unknown' : `${d.percent.toFixed(2)}%`} ` +
+      `Changed-line coverage is ${d.percent === null ? NO_PERCENT : `${d.percent.toFixed(2)}%`} ` +
       `(${d.covered} of ${d.measured} changed lines), below the required ${d.required ?? 100}%, and ` +
-      `overall coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, ` +
+      `overall coverage is ${summary.percent === null ? NO_PERCENT : `${summary.percent.toFixed(2)}%`}, ` +
       `below the required ${summary.required ?? 100}% (threshold from \`${summary.source}\`).`;
     if (options.failOnThreshold) {
       core.setFailed(
@@ -2442,7 +2517,7 @@ async function runCoverage(ctx) {
   }
   if (failed.selection) {
     const detail =
-      `The changed lines are covered, but overall coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, ` +
+      `The changed lines are covered, but overall coverage is ${summary.percent === null ? NO_PERCENT : `${summary.percent.toFixed(2)}%`}, ` +
       `below the required ${summary.required ?? 100}% (threshold from \`${summary.source}\`).`;
     if (options.failOnThreshold) {
       core.setFailed(`${detail} What to do: cover the regions listed above, or pass a lower \`min-coverage\`.`);
@@ -2454,7 +2529,7 @@ async function runCoverage(ctx) {
   if (code === 1 && summary.diff) {
     const d = summary.diff;
     const detail =
-      `Changed-line coverage is ${d.percent === null ? 'unknown' : `${d.percent.toFixed(2)}%`} ` +
+      `Changed-line coverage is ${d.percent === null ? NO_PERCENT : `${d.percent.toFixed(2)}%`} ` +
       `(${d.covered} of ${d.changed} changed lines), below the required ${d.required ?? 100}% ` +
       `(threshold from \`${d.source}\`).`;
     if (options.failOnThreshold) {
@@ -2468,7 +2543,7 @@ async function runCoverage(ctx) {
   }
   if (code === 1) {
     const detail =
-      `Coverage is ${summary.percent === null ? 'unknown' : `${summary.percent.toFixed(2)}%`}, below the required ` +
+      `Coverage is ${summary.percent === null ? NO_PERCENT : `${summary.percent.toFixed(2)}%`}, below the required ` +
       `${summary.required ?? 100}% (threshold from \`${summary.source}\`).`;
     if (options.failOnThreshold) {
       core.setFailed(
@@ -2507,8 +2582,9 @@ async function runCoverage(ctx) {
     return;
   }
   if (code === 3) {
+    const reason = summary.noDataReason ? ` Reason: ${noDataText(summary.noDataReason)}.` : '';
     core.setFailed(
-      'The coverage run produced no coverage data. What to do: make sure every test project references ' +
+      `The coverage run produced no coverage data.${reason} What to do: make sure every test project references ` +
         '`coverlet.collector`, and that the `coverage-root` input points at the tree that contains them.'
     );
     return;

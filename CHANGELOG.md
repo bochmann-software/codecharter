@@ -9,6 +9,15 @@ the latest release in its line.
 
 ### Added
 
+- Coverage mode with `affected-by: true` (CLI 1.9.0+ and the `coverageScope`
+  and `gates` sections of its report): the Test selection block says when the
+  selection escalated to every test project, with the CLI's reasons, and warns
+  about affected projects that no test project measured
+  (`gates.selection.unmeasuredProjects`).
+- Coverage mode: a run without data (exit code 3) names the CLI's
+  `summary.noDataReason` in the summary, the check title and the failure message:
+  no coverage files, a failed test project, a failed completeness check, or no
+  measurable lines.
 - Coverage mode with `affected-by: true`: the summary and the pull request
   comment gain a **Test selection** block naming how many test projects ran
   and, when the CLI's JSON report carries `coverageScope`, which ones were
@@ -28,6 +37,11 @@ the latest release in its line.
 
 ### Changed
 
+- Coverage mode: the verdicts come from the report's `gates` section and
+  `summary.hasMetTotalThreshold`, never from the summary percent. A percent the
+  report carries as null, such as a changed-lines gate over zero measured lines,
+  renders as `–` instead of `unknown`, 0 % or 100 %. Only exit code 1 fails a
+  gate; exit codes 2 and 3 are reported as before, whatever the gates section says.
 - Coverage mode: a run narrowed by `affected-by` no longer sends or updates the
   coverage badge; the badge comes only from unfiltered runs. The job summary and
   the pull request comment say so in one line when `badge: true` is set.

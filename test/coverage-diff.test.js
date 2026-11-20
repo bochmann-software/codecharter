@@ -374,7 +374,7 @@ test('buildCoverageComment renders an unknown diff percent and a missing minimum
   });
   const md = buildCoverageComment(summary, '/w', OPTS);
   assert.match(md, /^### Changed lines$/m);
-  assert.match(md, /badge\/diff%20coverage-unknown-red\?style=flat-square\)$/m);
+  assert.match(md, /badge\/diff%20coverage-%E2%80%93-red\?style=flat-square\)$/m);
   assert.doesNotMatch(md.split('### Changed lines')[1].split('\n')[2], /required/);
 });
 
@@ -414,7 +414,7 @@ test('coverageTitle names the diff gate when it decided the run', () => {
     'Diff coverage: no measurable changed lines (gate passed over 0 lines)'
   );
   const unknown = coverageSummary({ ...fixture(BELOW), diffCoverage: { measurableChangedLines: 1 } });
-  assert.equal(coverageTitle(1, unknown), 'Diff coverage unknown (0/1 changed lines) is below the required minimum');
+  assert.equal(coverageTitle(1, unknown), 'Diff coverage – (0/1 changed lines) is below the required minimum');
   assert.equal(coverageTitle(2, coverageSummary(fixture(BELOW))), 'Tests failed or coverage was incomplete');
 });
 

@@ -903,7 +903,7 @@ test('coverage mode: a failed diff gate with an unknown percent and minimum says
   await coverageRun(report, { diff: 'a..b', failOnThreshold: true }, 1);
   assert.match(
     failures[0],
-    /^Changed-line coverage is unknown \(1 of 2 changed lines\), below the required 100% \(threshold from `default`\)/
+    /^Changed-line coverage is – \(1 of 2 changed lines\), below the required 100% \(threshold from `default`\)/
   );
 });
 
@@ -1048,7 +1048,7 @@ test('coverage mode: a missed overall minimum with an unknown percent says so', 
   report.summary.percent = null;
   report.summary.minimumRequiredPercent = null;
   await coverageRun(report, { diff: 'a..b', affectedBy: 'true', failOnThreshold: true }, 1);
-  assert.match(failures[0], /overall coverage is unknown, below the required 100% /);
+  assert.match(failures[0], /overall coverage is –, below the required 100% /);
 });
 
 test('coverage mode: a failed completeness check names the changed file without coverage data', async () => {
@@ -1057,7 +1057,7 @@ test('coverage mode: a failed completeness check names the changed file without 
     { diff: 'a..b', affectedBy: 'true' },
     3
   );
-  assert.equal(payload.title, 'No coverage data');
+  assert.equal(payload.title, 'No coverage data: a changed file has no coverage data in the selected test projects');
   assert.match(payload.summary, /Completeness check failed/);
   assert.equal(failures.length, 1);
   assert.match(
@@ -1069,6 +1069,59 @@ test('coverage mode: a failed completeness check names the changed file without 
 test('coverage mode: exit 3 without a coverageScope keeps the generic no-data message', async () => {
   await coverageRun(null, { diff: 'a..b', affectedBy: 'true' }, 3);
   assert.match(failures[0], /^The coverage run produced no coverage data/);
+});
+
+test('coverage mode: a NoData report names its reason in the title and the failure message', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-nodata-no-coverage-files.json'),
+    { diff: 'a..b', affectedBy: 'true' },
+    3
+  );
+  assert.equal(payload.title, 'No coverage data: the test run wrote no coverage files');
+  assert.match(payload.summary, /\*\*Reason:\*\* the test run wrote no coverage files \(`noCoverageFiles`\)\./);
+  assert.equal(failures.length, 1);
+  assert.match(
+    failures[0],
+    /^The coverage run produced no coverage data\. Reason: the test run wrote no coverage files\. What to do:/
+  );
+});
+
+test('coverage mode: a test project that failed names its reason in the failure message', async () => {
+  await coverageRun(realReport('coverage-nodata-test-project-failed.json'), { diff: 'a..b', affectedBy: 'true' }, 3);
+  assert.match(failures[0], /Reason: a test project failed, so no complete coverage run exists\./);
+});
+
+test('coverage mode: an escalated selection passes and says it widened to every test project', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-escalated.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.equal(payload.conclusion, 'success');
+  assert.match(payload.summary, /\*\*Selection escalated to all test projects:\*\* Common\.Core changed/);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: an unmeasured affected project is warned about in the summary', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-unmeasured-projects.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.match(payload.summary, /\*\*Warning:\*\* no test project measured 1 affected project\(s\): Core\.Lib\./);
+  assert.deepEqual(failures, []);
+});
+
+test('coverage mode: a 0 of 0 changed-lines gate passes with a dash percent', async () => {
+  const payload = await coverageRun(
+    realReport('coverage-affected-zero-measured.json'),
+    { diff: 'a..b', affectedBy: 'true', failOnThreshold: true },
+    0
+  );
+  assert.equal(payload.conclusion, 'success');
+  assert.equal(payload.title, 'Diff coverage: no measurable changed lines (gate passed over 0 lines)');
+  assert.match(payload.summary, /\| Changed lines \| 0 \| 0 \| – \| 100% \| yes \|/);
+  assert.deepEqual(failures, []);
 });
 
 // Runs run() in coverage mode with the given inputs against a stubbed download
