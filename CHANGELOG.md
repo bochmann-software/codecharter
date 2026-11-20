@@ -43,8 +43,9 @@ the latest release in its line.
   number or `"false"`. Empty means no verdict and is distinct from `"false"`.
   This also applies to reports of CLI 1.8.x. A workflow that checks
   `coverage-met == 'false'` (for example after `continue-on-error`) should also
-  handle `coverage-met == ''`. Such a run sends no coverage badge, and its
-  summary and pull request comment show the no-data card.
+  handle `coverage-met == ''`. Such a run sends no coverage badge. A run with a
+  `noDataReason`, a null percent or exit code 3 also shows the no-data card in
+  its summary and pull request comment.
 - Coverage mode: an incomplete run (exit code 2) with a `noDataReason` names the
   reason in the check title and the failure message; paths outside the
   workspace are shown as the CLI wrote them, and the workspace root as `.`;

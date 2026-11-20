@@ -71260,6 +71260,7 @@ function buildCoverageComment(summary2, workspace, opts) {
       "![coverage](https://img.shields.io/badge/coverage-no%20data-lightgrey?style=flat-square)",
       "",
       ...affectedSelectionLines(summary2, workspace, affectedBy),
+      ...uninstrumentedLines(summary2, workspace),
       ...noDataLines(summary2),
       ...badgeSkippedLines(badgeSkipped),
       "---",
