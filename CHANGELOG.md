@@ -41,12 +41,15 @@ the latest release in its line.
   exited with code 2 or 3) now sets `coverage-percent`, `coverage-met`,
   `diff-coverage-percent` and `diff-coverage-met` to empty, instead of a
   number or `"false"`. Empty means no verdict and is distinct from `"false"`.
+  This also applies to reports of CLI 1.8.x. A workflow that checks
+  `coverage-met == 'false'` (for example after `continue-on-error`) should also
+  handle `coverage-met == ''`. Such a run sends no coverage badge, and its
+  summary and pull request comment show the no-data card.
 - Coverage mode: an incomplete run (exit code 2) with a `noDataReason` names the
   reason in the check title and the failure message; paths outside the
   workspace are shown as the CLI wrote them, and the workspace root as `.`;
   escalation reasons are capped like the other lists; a plain `diff` run
   without a `gates` section reads exit code 1 as the changed-lines gate.
-
 - Coverage mode: the verdicts come from the report's `gates` section and
   `summary.hasMetTotalThreshold`, never from the summary percent. A percent the
   report carries as null, such as a changed-lines gate over zero measured lines,
